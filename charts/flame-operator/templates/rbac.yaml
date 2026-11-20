@@ -1,0 +1,71 @@
+{{- $name := default (include "flame-operator.fullname" .) .Values.serviceAccount.name -}}
+{{- $role := printf "%s-%s" (include "flame-operator.fullname" .) .Release.Namespace | trunc 63 | trimSuffix "-" -}}
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+---
+{{- end }}
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $role }}
+rules:
+  - apiGroups: [flame.xflops.io]
+    resources: [flameclusters, flameclusters/status, flameclusters/finalizers]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [flame.xflops.io]
+    resources: [flameworkers]
+    verbs: [get, list, watch, create]
+  - apiGroups: [flame.xflops.io]
+    resources: [flameworkers/status]
+    verbs: [get, patch]
+  - apiGroups: [flame.xflops.io]
+    resources: [flameworkers/finalizers]
+    verbs: [update]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [""]
+    resources: [services, configmaps, persistentvolumeclaims, secrets, serviceaccounts]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [services/proxy]
+    verbs: [create]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [gateways, httproutes, backendtlspolicies]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [gateway.envoyproxy.io]
+    resources: [envoyproxies, clienttrafficpolicies]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    verbs: [get, list, watch, create, patch, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $role }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $role }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

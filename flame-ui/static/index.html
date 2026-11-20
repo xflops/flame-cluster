@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#ffffff"><title>Flame Console</title>
+  <link rel="icon" href="/flame-logo.png">
+  <link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="#/applications" aria-label="Flame Console home"><img src="/flame-logo.png" alt="" width="33" height="36"><span>Flame <span class="brand-console">Console</span></span></a>
+    <div class="cluster-control"><span class="cluster-label">FLAME</span><span id="connection-name">Connecting…</span><span class="live-dot" id="connection-dot" title="Connecting"></span></div>
+  </header>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Main navigation">
+      <div class="nav-label" id="nav-label">RESOURCES</div>
+      <nav id="navigation"></nav>
+      <div class="sidebar-bottom"><span class="flame-wordmark">Flame</span><p>Elastic compute.<br>One place to see it all.</p><a href="https://xflops.io" target="_blank" rel="noreferrer">xflops.io <span aria-hidden="true">↗</span></a></div>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div class="breadcrumb"><a id="breadcrumb-home" href="#/applications">Console</a><span id="breadcrumb-detail"></span></div>
+      <div class="page-heading"><div><div class="eyebrow" id="eyebrow">FLAME</div><h1 id="page-title">Applications</h1><p id="page-description">Your services and runtimes, ready for work.</p></div><div class="page-tools"><span id="updated" class="updated">Connecting…</span><button id="auto-refresh" class="button subtle" aria-pressed="true">Auto-refresh on</button><button id="refresh" class="button" aria-label="Refresh data"><span aria-hidden="true">↻</span> Refresh</button></div></div>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <section class="data-panel" aria-label="Resource data">
+        <div class="table-toolbar"><div class="section-title"><h2 id="section-title">All applications</h2><span id="row-count" class="count">—</span></div><div class="filters"><label class="sr-only" for="status-filter">Filter by status</label><select id="status-filter"></select></div></div>
+        <div id="content" aria-live="polite"><div class="empty"><div class="spinner"></div><h3>Connecting to Flame</h3><p>Connecting to Flame…</p></div></div>
+        <footer class="table-footer"><span id="table-caption">Live data from Flame</span><div class="pagination"><button id="previous" class="button small" disabled>← Previous</button><span id="page-number">Page 1</span><button id="next" class="button small" disabled>Next →</button></div></footer>
+      </section>
+      <footer class="main-footer"><span><span class="orange-dot"></span> Powered by Flame</span><span><span id="product-name">Flame Console</span> <span class="footer-separator">/</span> v0.1</span></footer>
+    </main>
+  </div>
+  <dialog id="details" aria-labelledby="detail-title"><div class="drawer-header"><div><span class="eyebrow" id="detail-kind">RESOURCE DETAILS</span><h2 id="detail-title"></h2></div><button id="close-details" class="icon-button" aria-label="Close details">×</button></div><div id="detail-content" class="drawer-content"></div></dialog>
+</body>
+</html>

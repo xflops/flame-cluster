@@ -1,0 +1,21 @@
+[package]
+name = "flmlet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flame-api.workspace = true
+chrono.workspace = true
+kube.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tempfile.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+rustls-pki-types = { version = "1", features = ["std"] }

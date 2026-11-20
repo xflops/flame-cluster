@@ -1,12 +1,11 @@
-
-# Binaries
-bin/
-manager
-
-# Kubernetes generated files
-manifests/
-config/
-
-# Go
-go.sum
-vendor/
+/target/
+/dist/
+node_modules
+flame-ui/dist/
+flame-ui/test-results/
+flame-ui/playwright-report/
+__pycache__/
+*.log
+.env
+.ci-runtime/
+.ci-artifacts/

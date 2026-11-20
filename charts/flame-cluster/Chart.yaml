@@ -1,0 +1,6 @@
+apiVersion: v2
+name: flame-cluster
+description: A FlameCluster resource for an existing Flame operator and SRE-managed dependencies.
+type: application
+version: 0.1.0
+appVersion: latest

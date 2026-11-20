@@ -1,0 +1,21 @@
+fullnameOverride: ""
+image:
+  repository: docker.io/xflops/flame-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 512Mi
+# One controller owns each FlameCluster; leader election is not enabled.
+serviceAccount:
+  create: true
+  name: ""
+rbac:
+  create: true

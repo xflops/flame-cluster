@@ -1,0 +1,6 @@
+apiVersion: v2
+name: flame-operator
+description: flame-operator for Flame clusters; infrastructure dependencies are managed by SREs.
+type: application
+version: 0.1.0
+appVersion: latest

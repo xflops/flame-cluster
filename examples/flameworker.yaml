@@ -1,0 +1,12 @@
+apiVersion: flame.xflops.io/v1alpha1
+kind: FlameWorker
+metadata:
+  name: worker-01
+  namespace: flame-system
+spec:
+  clusterRef: flame
+  address: 192.168.10.21
+  shims: [host]
+  maxExecutors: 10
+  pythonVersion: "3.12"
+  manageObjectCache: true

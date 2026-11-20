@@ -3,7 +3,7 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY flame-api flame-api
 COPY flame-operator flame-operator
-COPY flame-console flame-console
+COPY flame-cluster flame-cluster
 COPY flmlet flmlet
 RUN cargo build --release --locked --workspace --bins
 
@@ -22,11 +22,11 @@ COPY --from=build /workspace/target/release/flame-operator /usr/local/bin/flame-
 EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/flame-operator"]
 
-FROM runtime AS flame-console
-COPY --from=build /workspace/target/release/flame-console /usr/local/bin/flame-console
+FROM runtime AS flame-cluster
+COPY --from=build /workspace/target/release/flame-cluster /usr/local/bin/flame-cluster
 ENV CONSOLE_BIND=0.0.0.0:3000
 EXPOSE 3000
-ENTRYPOINT ["/usr/local/bin/flame-console"]
+ENTRYPOINT ["/usr/local/bin/flame-cluster"]
 
 FROM docker.io/library/node:lts-alpine AS ui-build
 WORKDIR /ui
@@ -37,7 +37,7 @@ COPY flame-ui/static/ ./static/
 RUN npm run build
 
 FROM docker.io/nginxinc/nginx-unprivileged:alpine AS flame-ui
-ENV CONSOLE_API_UPSTREAM=flame-console:3000
+ENV CONSOLE_API_UPSTREAM=cluster:3000
 COPY --from=ui-build /ui/dist/ /usr/share/nginx/html/
 COPY flame-ui/nginx.conf.template /etc/nginx/templates/default.conf.template
 EXPOSE 8080

@@ -1,10 +1,11 @@
 # flmlet
 
 `flmlet` reconciles one namespaced `FlameWorker` on an existing Linux systemd host.
-SREs install the public Flame runtime, Python SDK/interpreters, optional CRI
-runtime, networking, and storage first. flmlet configures and starts the installed
-FEM and, when `manageObjectCache: true`, its paired FOC. It never downloads Flame
-releases, polls registries, installs Kubernetes, or requests Kubernetes CSRs.
+SREs prepare workload runtimes, networking, and storage. Flmlet first installs
+FEM through upstream `flame/setup.sh --join --no-systemd`, then prepares its
+cluster configuration, and finally starts FEM and the optional paired object
+cache. The upstream installer never starts services during this bootstrap.
+Flmlet does not poll registries, install Kubernetes, or request Kubernetes CSRs.
 
 The operator renews a cluster join token every fifteen minutes. Copy the current
 join command from **Settings → Join a node** in the UI and run it on the prepared
@@ -43,11 +44,12 @@ percent signs, and dollar signs, but quotes, backslashes, control characters,
 parent traversal, and trailing whitespace are rejected before host changes. The daemon polls every ten
 seconds. `--once` reports failure unless the worker becomes Ready (or is
 intentionally disabled/absent and cleanup completes). `--check` reads current
-resources and performs read-only host preflight, validating binaries, selected
-version, and file/unit ownership before printing the desired configuration.
-The installer's `--configure` phase
-performs the same preflight and writes configuration/owned units without
-starting services; normal daemon reconciliation activates them afterward.
+resources and performs read-only host preflight, validating identity, trust,
+and file/unit ownership before printing the desired configuration. A missing
+runtime can be installed later; `--check` performs no installation.
+The installer's `--configure` phase installs the runtime if needed, then writes
+configuration and owned units without starting services. Normal daemon
+reconciliation starts FEM only after those steps succeed.
 
 Only `flame-executor-manager.service` and the optional
 `flame-object-cache.service` are managed. Their ownership headers identify the
@@ -77,8 +79,9 @@ The optional paired object cache continues using private-LAN `grpc://` with no
 cache TLS; SREs must restrict that network separately.
 
 A pinned cluster version must match local `PREFIX/VERSION` or the installed
-FEM's `--version`; mismatches report NotReady and require SRE installation.
-`latest` uses the existing selected runtime without looking for updates.
+FEM's `--version`; a mismatch installs the selected version before configuration
+and service startup. `latest` installs a missing runtime and otherwise retains
+the existing runtime without looking for updates.
 Readiness requires active services, the actual hostname Ready in FLM node
 inventory, and TCP cache readiness when FOC is managed. Heartbeats and the
 applied configuration hash are reported on `FlameWorker.status`.

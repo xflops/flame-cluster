@@ -26,7 +26,8 @@ worker trust fails closed. The optional worker object cache remains a private
 ## Workload runtimes
 
 New workers default to the CRI shim. The SRE supplies and secures the CRI runtime
-and its network configuration; setup does not install a runtime. Users select
+and its network configuration; setup does not install the CRI runtime. Flmlet installs FEM through the trusted
+upstream Flame installer before writing configuration and starting its services. Users select
 shims with `setup.sh --join TOKEN --shims cri`, `--shims host`, or
 `--shims cri,host`, or configure `FlameWorker.spec.shims` directly.
 
@@ -46,7 +47,7 @@ tenant authorization. Expose it only through trusted access or an SRE-managed
 authentication proxy. Backend mTLS authenticates the console to FLM, not users
 to the console.
 
-`CONSOLE_ALLOWED_HOSTS` and Helm `security.allowedHosts` restrict API Host headers
+`CONSOLE_ALLOWED_HOSTS` and Helm `api.security.allowedHosts` restrict API Host headers
 to explicit hostnames or IPs. Loopback names are allowed by default for local
 port forwarding. Add the actual console hostname when configuring an ingress.
 This protects against DNS rebinding; it is not user authentication. Session/task

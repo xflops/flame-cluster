@@ -41,7 +41,7 @@ impl Cli {
                 }
                 "--help" | "-h" => {
                     println!(
-                        "flmlet --worker NAME [--namespace NS] [--prefix DIR] [--kubeconfig FILE] [--systemd-dir DIR] [--adopt-existing] [--once] [--check | --configure]\nSREs install Flame binaries and provide scoped Kubernetes credentials. --check prints desired configuration without host mutations."
+                        "flmlet --worker NAME [--namespace NS] [--prefix DIR] [--kubeconfig FILE] [--systemd-dir DIR] [--adopt-existing] [--once] [--check | --configure]\nFlame binaries are installed before configuration; Kubernetes credentials remain worker-scoped. --check prints desired configuration without host mutations."
                     );
                     return Ok(None);
                 }

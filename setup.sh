@@ -22,6 +22,7 @@ usage: setup.sh [options]
   --flame-version TAG       desired Flame runtime version (default latest)
   --image-tag TAG           operator/console/UI image tag (default release version)
   --endpoint HOST:PORT      worker FLM override (default kubeconfig IPv4:nodePort)
+  --ui-address IPV4         UI external IP (default kubeconfig server IPv4)
   --console-endpoint URL    direct console FLM endpoint (default the session-manager Service)
   --kubernetes-endpoint URL enrollment API override (default active kubeconfig server)
   --kubeconfig FILE         Kubernetes credentials for Helm installation
@@ -32,14 +33,15 @@ usage: setup.sh [options]
   --max-executors N          worker executor limit (default 10)
   --shims LIST              cri, host, or cri,host (default cri; SRE prepares runtimes)
   --manage-object-cache      let flmlet manage the worker object cache
-  --prefix DIR              existing Flame runtime directory (default /usr/local/flame)
+  --prefix DIR              Flame installation directory (default /usr/local/flame)
   --systemd-dir DIR         systemd unit directory (default /etc/systemd/system)
   --adopt-existing          permit adoption of existing worker/service units
   -h, --help                show this help
 
 Existing Kubernetes, cert-manager, Envoy Gateway/Gateway API, GatewayClass and
 ClusterIssuer are SRE prerequisites. This script does not install them. Worker
-mode requires Linux/systemd, root, Python 3, and an existing Flame runtime.
+mode requires Linux/systemd, root, Python 3, and prepared workload runtimes/networking.
+Flmlet installs FEM through upstream Flame setup, writes config, then starts FEM.
 Inline tokens can appear in process arguments; prefer --token-file on shared hosts.
 USAGE
 }
@@ -57,6 +59,7 @@ values=
 flame_version=latest
 endpoint=
 console_endpoint=
+ui_address=
 kubernetes_endpoint=
 kubeconfig=
 token_file=
@@ -83,7 +86,7 @@ while [ "$#" -gt 0 ]; do
         --adopt-existing) adopt=1; shift ;;
         --manage-object-cache) manage_cache=1; shift ;;
         -h|--help) usage; exit 0 ;;
-        --version|--image-tag|--artifacts-dir|--namespace|--cluster|--hostname|--values|--flame-version|--endpoint|--console-endpoint|--kubernetes-endpoint|--kubeconfig|--token-file|--worker|--address|--max-executors|--shims|--prefix|--systemd-dir)
+        --version|--image-tag|--artifacts-dir|--namespace|--cluster|--hostname|--values|--flame-version|--endpoint|--ui-address|--console-endpoint|--kubernetes-endpoint|--kubeconfig|--token-file|--worker|--address|--max-executors|--shims|--prefix|--systemd-dir)
             [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$1 requires a value"
             option="$1"; value="$2"; shift 2
             case "$option" in
@@ -91,7 +94,7 @@ while [ "$#" -gt 0 ]; do
                 --artifacts-dir) artifacts="$value" ;; --namespace) namespace="$value"; namespace_set=1 ;;
                 --cluster) cluster="$value"; cluster_set=1 ;; --hostname) hostname="$value" ;;
                 --values) values="$value" ;; --flame-version) flame_version="$value" ;;
-                --endpoint) endpoint="$value" ;; --console-endpoint) console_endpoint="$value" ;;
+                --endpoint) endpoint="$value" ;; --ui-address) ui_address="$value" ;; --console-endpoint) console_endpoint="$value" ;;
                 --kubernetes-endpoint) kubernetes_endpoint="$value" ;; --kubeconfig) kubeconfig="$value" ;;
                 --token-file) token_file="$value" ;; --worker) worker="$value" ;;
                 --address) address="$value" ;; --max-executors) max_executors="$value" ;;
@@ -168,8 +171,9 @@ if [ "$mode" = cluster ]; then
     [ -z "$token_file" ] && [ -z "$worker" ] || fail '--token-file and --worker require --join'
     for tool in helm kubectl python3; do need "$tool"; done
     kube_server="$(kube config view --minify -o 'jsonpath={.clusters[0].cluster.server}')" || fail 'cannot read the active kubeconfig server'
-    python3 - "$kube_server" "$work/kube-host" "$work/worker-host" "$endpoint" <<'PY'
+    python3 - "$kube_server" "$work/kube-host" "$work/worker-host" "$endpoint" "$work/ui-address" "$ui_address" <<'PY'
 import ipaddress
+import json
 import socket
 import sys
 from pathlib import Path
@@ -184,16 +188,26 @@ try:
             or (url.port is not None and not 1 <= url.port <= 65535)):
         raise ValueError()
     Path(sys.argv[2]).write_text(host)
-    if not sys.argv[4]:
+    ip = None
+    if not sys.argv[4] or not sys.argv[6]:
         address = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
         ip = ipaddress.IPv4Address(address)
+    if not sys.argv[4]:
         networks = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
         if not any(ip in ipaddress.IPv4Network(network) for network in networks):
             raise ValueError()
         Path(sys.argv[3]).write_text(str(ip))
+    ui_ip = ipaddress.IPv4Address(sys.argv[6]) if sys.argv[6] else ip
+    if ui_ip.is_unspecified or ui_ip.is_multicast or ui_ip.is_loopback or str(ui_ip) == '255.255.255.255':
+        raise ValueError()
+    Path(sys.argv[5]).write_text(str(ui_ip))
+    allowed = list(dict.fromkeys(['localhost', '127.0.0.1', '::1', str(ui_ip), host]))
+    Path(sys.argv[5]).with_name('api-allowed-hosts').write_text(json.dumps(allowed))
 except (ValueError, OSError):
-    sys.exit('Flame Cluster: active kubeconfig must use HTTPS and resolve to a worker-reachable RFC 1918 IPv4; use --endpoint to override frontend IPv4 discovery')
+    sys.exit('Flame Cluster: invalid kubeconfig/UI address; use HTTPS and a unicast UI IPv4; frontend discovery requires RFC 1918 IPv4 unless --endpoint is set')
 PY
+    ui_address="$(cat "$work/ui-address")"
+    api_allowed_hosts="$(cat "$work/api-allowed-hosts")"
     hostname="${hostname:-$(cat "$work/kube-host")}"
     kubernetes_endpoint="${kubernetes_endpoint:-$kube_server}"
     endpoint_host=
@@ -207,14 +221,15 @@ PY
     fetch flame-cluster-charts.tar.gz
     verify flame-cluster-charts.tar.gz
     extract flame-cluster-charts.tar.gz
-    for component in flame-operator flame-cluster flame-console flame-ui; do
+    for component in flame-operator flame-cluster flame-ui; do
         [ -f "$work/charts/$component/Chart.yaml" ] || fail "release chart is missing: $component"
     done
     # Render every component before the first persistent Kubernetes change.
     helm_command template flame-operator "$work/charts/flame-operator" --namespace "$namespace" --set-string "image.tag=$image_tag" > "$work/operator.yaml"
     set -- template flame-cluster "$work/charts/flame-cluster" --namespace "$namespace"
     [ -z "$values" ] || set -- "$@" --values "$values"
-    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "endpointHost=$endpoint_host" --set-string "version=$flame_version"
+    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "endpointHost=$endpoint_host" --set-string "version=$flame_version" --set-string "api.image.tag=$image_tag" --set-json "api.security.allowedHosts=$api_allowed_hosts"
+    [ -z "$console_endpoint" ] || set -- "$@" --set-string "api.flame.endpoint=$console_endpoint"
     [ -z "$endpoint" ] || set -- "$@" --set-string "endpoint=$endpoint"
     [ -z "$kubernetes_endpoint" ] || set -- "$@" --set-string "kubernetesEndpoint=$kubernetes_endpoint"
     helm_command "$@" > "$work/cluster.yaml"
@@ -226,9 +241,7 @@ PY
     kube get clusterissuer "$issuer" >/dev/null || fail "SRE ClusterIssuer is missing: $issuer"
     kube wait "gatewayclass/$gateway_class" --for=condition=Accepted --timeout=120s >/dev/null || fail 'SRE GatewayClass is not accepted'
     kube wait "clusterissuer/$issuer" --for=condition=Ready --timeout=120s >/dev/null || fail 'SRE ClusterIssuer is not ready'
-    console_endpoint="${console_endpoint:-https://$cluster-session-manager.$namespace.svc:8080}"
-    helm_command template flame-console "$work/charts/flame-console" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "flame.endpoint=$console_endpoint" --set-string "flame.name=$cluster" --set-string "join.secretName=$cluster-join" --set-string "flame.tls.caConfigMap=$issuer" --set-string flame.tls.caKey=ca.crt --set-string flame.tls.certKey= --set-string flame.tls.keyKey= > "$work/console.yaml"
-    helm_command template flame-ui "$work/charts/flame-ui" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "consoleUpstream=flame-console.$namespace.svc:3000" > "$work/ui.yaml"
+    helm_command template flame-ui "$work/charts/flame-ui" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "consoleUpstream=cluster.$namespace.svc:3000" --set-string "service.externalIPs[0]=$ui_address" > "$work/ui.yaml"
     # Flame CRDs belong to this release; third-party CRDs remain SRE-owned.
     [ -d "$work/charts/flame-operator/crds" ] || fail 'operator CRDs are missing from the release'
     kube apply --server-side --field-manager=flame-cluster-setup -f "$work/charts/flame-operator/crds" >/dev/null
@@ -237,26 +250,25 @@ PY
     # Reuse the exact preflight-rendered cluster flags.
     set -- upgrade --install flame-cluster "$work/charts/flame-cluster" --namespace "$namespace"
     [ -z "$values" ] || set -- "$@" --values "$values"
-    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "endpointHost=$endpoint_host" --set-string "version=$flame_version"
+    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "endpointHost=$endpoint_host" --set-string "version=$flame_version" --set-string "api.image.tag=$image_tag" --set-json "api.security.allowedHosts=$api_allowed_hosts"
+    [ -z "$console_endpoint" ] || set -- "$@" --set-string "api.flame.endpoint=$console_endpoint"
     [ -z "$endpoint" ] || set -- "$@" --set-string "endpoint=$endpoint"
     [ -z "$kubernetes_endpoint" ] || set -- "$@" --set-string "kubernetesEndpoint=$kubernetes_endpoint"
     helm_command "$@" --wait --atomic --timeout 5m
     kube -n "$namespace" wait "flamecluster/$cluster" --for=condition=Ready --timeout=15m
-    helm_command upgrade --install flame-console "$work/charts/flame-console" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "flame.endpoint=$console_endpoint" --set-string "flame.name=$cluster" --set-string "join.secretName=$cluster-join" --set-string "flame.tls.caConfigMap=$issuer" --set-string flame.tls.caKey=ca.crt --set-string flame.tls.certKey= --set-string flame.tls.keyKey= --wait --atomic --timeout 5m
-    helm_command upgrade --install flame-ui "$work/charts/flame-ui" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "consoleUpstream=flame-console.$namespace.svc:3000" --wait --atomic --timeout 5m
+    helm_command upgrade --install flame-ui "$work/charts/flame-ui" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "consoleUpstream=cluster.$namespace.svc:3000" --set-string "service.externalIPs[0]=$ui_address" --wait --atomic --timeout 5m
     printf 'Flame Cluster %s installed in %s.\n' "$cluster" "$namespace"
-    printf 'Console: kubectl -n %s port-forward service/flame-ui 8080:80\n' "$namespace"
+    printf 'Console: http://%s/\n' "$ui_address"
     exit 0
 fi
 
-# Worker installation never provisions Flame binaries or system dependencies.
+# Enroll the host and install flmlet; flmlet owns FEM installation and configuration.
 need python3
 need systemctl
 [ "$(uname -s)" = Linux ] || fail 'worker installation requires Linux'
 [ "$(id -u)" = 0 ] || fail 'worker installation requires root'
 [ -n "$token_file" ] && [ -r "$token_file" ] || fail '--join requires a token or readable --token-file'
 [ -z "$kubeconfig" ] || fail 'worker enrollment uses --token-file, not --kubeconfig'
-[ -x "$prefix/bin/flame-executor-manager" ] || fail 'SRE must install the Flame runtime at --prefix before joining'
 if printf '%s' "$prefix$systemd_dir" | LC_ALL=C grep -q '[[:cntrl:]]'; then fail 'prefix and systemd directory cannot contain control characters'; fi
 case "$prefix:$systemd_dir" in *'"'*|*'\'*|*'$'*|*'%'*) fail 'prefix and systemd directory contain unsupported characters' ;; esac
 case "$prefix" in /*) ;; *) fail '--prefix must be absolute' ;; esac
@@ -399,9 +411,9 @@ def enroll(arguments):
     url = f"{server}/api/v1/namespaces/{envelope['serviceNamespace']}/services/http:{envelope['service']}:8081/proxy/join"
     state = prefix / 'conf' / 'flmlet'
     created_directories = []
-    for candidate in (prefix / 'conf', state):
+    for candidate in (*reversed(prefix.parents), prefix, prefix / 'conf', state):
         try:
-            candidate.mkdir(mode=0o700)
+            candidate.mkdir(mode=0o700 if candidate in (prefix / 'conf', state) else 0o755)
             created_directories.append(candidate)
         except FileExistsError:
             require(candidate.is_dir(), 'flmlet state path is not a directory')

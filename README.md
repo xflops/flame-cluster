@@ -10,8 +10,8 @@ selection is configurable; worker-network isolation remains an SRE responsibilit
 | --- | --- |
 | `flame-api` | Own FlameCluster/FlameWorker definitions, validation, and CRD generation. |
 | [flame-operator](flame-operator/README.md) | Reconcile Flame session-manager storage, services, certificates and gateway routes. |
-| [flmlet](flmlet/README.md) | Reconcile SRE-installed FEM and optional object-cache systemd services on a host. |
-| [flame-console](flame-console/README.md) | Read nodes, applications, sessions, executors and tasks directly from a configured FLM; forward session actions. |
+| [flmlet](flmlet/README.md) | Install FEM through upstream Flame setup, configure it, and reconcile host services. |
+| [flame-cluster](flame-cluster/README.md) | Read nodes, applications, sessions, executors and tasks directly from a configured FLM; forward session actions. |
 | [flame-ui](flame-ui/README.md) | Serve the Flame console at `/`. |
 
 There is no platform operator, logical manager, Terraform, Ansible,
@@ -33,7 +33,9 @@ session-manager/cache NodePort host. Defaults require no values file; `--values`
 is optional. SREs prepare the dependencies described below. The operator generates
 a cluster join token and renews it every 15 minutes. Open the UI at `/`, select
 **Settings**, and copy the **Join a node** command. Run it on the prepared worker
-host with `setup.sh` available; no `kubectl` token lookup is needed.
+host with `setup.sh` available; no `kubectl` token lookup is needed. Flmlet runs
+upstream `flame/setup.sh --join` with service startup suppressed, prepares the
+cluster config, and starts FEM only after configuration succeeds.
 
 The installer creates the FlameWorker and generates
 `conf/flmlet/flame-cluster.yaml` for FEM. No worker CR is needed in advance.
@@ -63,15 +65,14 @@ helm upgrade --install flame-operator charts/flame-operator \
 helm upgrade --install flame charts/flame-cluster --namespace flame-system \
   --set gateway.hostname=192.168.3.10 --set endpointHost=192.168.3.10 \
   --set kubernetesEndpoint=https://192.168.3.10:6443
-helm upgrade --install flame-console charts/flame-console --namespace flame-system \
-  --set flame.endpoint=https://flame-session-manager:8080 \
-  --set flame.tls.caConfigMap=flame-client-ca \
-  --set join.secretName=flame-join
 helm upgrade --install flame-ui charts/flame-ui --namespace flame-system
-kubectl -n flame-system port-forward service/flame-ui 8080:80
 ```
 
-Open `http://localhost:8080/` to view the configured cluster's Applications page.
+Setup defaults the UI external IP to the IPv4 address of the kubeconfig server
+(without its API port) and adds it to the API host allowlist. To use the
+manager's Tailscale IPv4 instead, pass `--ui-address <tailscale-ip>`. Open `http://<tailscale-ip>/` to view the configured cluster's
+Applications page; see [direct access](docs/deployment.md#direct-tailscale-access)
+for Helm commands.
 The selector lists only that cluster. The Compact sidebar order is
 Nodes → Executors → Applications → Sessions → Settings. Settings shows the
 connection and the current node join command, including its expiration.
@@ -82,7 +83,11 @@ This lifetime is separate from the 15-minute node join token rotation.
 
 The console talks directly to FLM and has no
 Kubernetes client, service-account token or Kubernetes RBAC. For an existing FLM,
-install just the console/UI charts and point `flame.endpoint` to that service.
+install `charts/flame-cluster` with `cluster.enabled=false` and set
+`api.flame.endpoint` to that service, then install `charts/flame-ui`. The combined
+cluster chart deploys the FlameCluster resource and its API by default;
+`api.enabled=false` omits the API. Its image is `docker.io/xflops/flame-cluster`,
+and its default Service name is `cluster`.
 See [Helm values and SRE prerequisites](docs/deployment.md) for TLS, image selection,
 external cache endpoints, CRD upgrades and uninstall behavior.
 
@@ -94,10 +99,10 @@ Rust 1.95+, Node.js LTS, and Helm are required.
 bash ci/check.sh
 (cd flame-ui && npm ci && npm test)
 (cd flame-ui && npx playwright install chromium && npm run test:browser)
-FLAME_ENDPOINT=https://192.168.10.10:30080 FLAME_CA_FILE=ca.crt cargo run -p flame-console
+FLAME_ENDPOINT=https://192.168.10.10:30080 FLAME_CA_FILE=ca.crt cargo run -p flame-cluster
 ```
 
-Build the `flame-operator`, `flame-console` and `flame-ui` targets in the root
+Build the `flame-operator`, `flame-cluster` and `flame-ui` targets in the root
 Dockerfile. All image references use upstream registries; SREs choose the image
 repositories/tags in Helm values and the FlameCluster resource.
 
@@ -111,5 +116,5 @@ the SRE for its own test dependencies; production charts never install them.
 Only successful main runs publish the tested images, worker binaries, Helm charts
 and installer. New merges cancel older
 main runs. Publishing needs `DOCKER_HUB_USERNAME` and `DOCKER_HUB_PAT` configured
-for the `xflops/flame-operator`, `xflops/flame-console`, and `xflops/flame-ui` repositories.
+for the `xflops/flame-operator`, `xflops/flame-cluster`, and `xflops/flame-ui` repositories.
 `XFLOPS_CLUSTER_TOKEN` is the website publishing Actions secret.

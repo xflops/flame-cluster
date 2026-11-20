@@ -17,4 +17,6 @@ replicaCount: 1
 service:
   type: ClusterIP
   port: 80
-consoleUpstream: flame-console:3000
+  # Optional node-owned addresses, for example the manager's Tailscale IPv4.
+  externalIPs: []
+consoleUpstream: cluster:3000

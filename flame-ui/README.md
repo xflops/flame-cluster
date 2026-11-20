@@ -10,16 +10,19 @@ with its expiration, loaded from `/api/join` only while Settings is open.
 The command uses the current rotating token; unavailable or expired tokens do
 not produce a copyable command. Refresh Settings for the latest command.
 The cluster installer configures the join Secret mount automatically. For a
-manual console deployment, set `join.secretName` as described in the
-[console configuration](../flame-console/README.md).
+manual deployment, configure `api.join.secretName` in the combined cluster
+chart as described in the
+[console configuration](../flame-cluster/README.md).
 
 Compact density is the default for the header, sidebar, table rows, controls,
 and Settings. A full 12-row resource page fits a 1440×900 viewport.
 
 The browser calls same-origin `/api` routes through Nginx. Set
-`CONSOLE_API_UPSTREAM=flame-console:3000` when running the image; the Helm chart
-sets this to its configured console service. Configure the FLM endpoint and any
-TLS credentials on `flame-console`, never in browser assets.
+`CONSOLE_API_UPSTREAM=cluster:3000` when running the image; the Helm chart
+sets this to its configured console service. For direct Tailscale access, set
+`service.externalIPs` to the manager's Tailscale IPv4 and include that address
+in the API's allowed hosts; see [deployment](../docs/deployment.md#direct-tailscale-access). Configure the FLM endpoint and any
+TLS credentials on `flame-cluster`, never in browser assets.
 
 ```sh
 npm ci

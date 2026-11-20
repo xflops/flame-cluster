@@ -515,7 +515,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flame-console"
+name = "flame-cluster"
 version = "0.1.0"
 dependencies = [
  "axum",

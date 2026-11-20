@@ -1,3 +1,4 @@
+{{- if .Values.cluster.enabled }}
 apiVersion: flame.xflops.io/v1alpha1
 kind: FlameCluster
 metadata:
@@ -32,3 +33,4 @@ spec:
     {{- $gateway := deepCopy .Values.gateway }}
     {{- $_ := set $gateway "hostname" (required "gateway.hostname is required" .Values.gateway.hostname) }}
     {{- toYaml $gateway | nindent 4 }}
+{{- end }}

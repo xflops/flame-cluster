@@ -126,7 +126,7 @@ jobs:
           kubectl get events -A --sort-by=.lastTimestamp || true
           kubectl -n flame-system describe flamecluster flame || true
           kubectl -n flame-system logs deployment/flame-operator --tail=150 || true
-          kubectl -n flame-system logs deployment/flame-console --tail=100 || true
+          kubectl -n flame-system logs deployment/cluster --tail=100 || true
           kubectl -n flame-system logs deployment/flame-session-manager --tail=100 || true
           kubectl -n flame-system get flameworker flame-ci-worker -o yaml || true
           docker exec flame-ci-worker journalctl -u flmlet -u flame-executor-manager -u flame-object-cache --no-pager -n 150 || true
@@ -182,11 +182,11 @@ jobs:
           set -euo pipefail
           for arch in amd64 arm64; do
             docker load --input "images/flame-images-$arch.tar.gz"
-            for component in flame-operator flame-console flame-ui; do
+            for component in flame-operator flame-cluster flame-ui; do
               docker push "xflops/$component:sha-$GITHUB_SHA-$arch"
             done
           done
-          for component in flame-operator flame-console flame-ui; do
+          for component in flame-operator flame-cluster flame-ui; do
             docker buildx imagetools create \
               --tag "xflops/$component:sha-$GITHUB_SHA" --tag "xflops/$component:latest" \
               "xflops/$component:sha-$GITHUB_SHA-amd64" \

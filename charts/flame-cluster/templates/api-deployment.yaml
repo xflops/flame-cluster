@@ -1,22 +1,36 @@
-{{- $tls := .Values.flame.tls -}}
+{{- if .Values.api.enabled }}
+{{- $tls := deepCopy .Values.api.flame.tls -}}
+{{- $joinSecret := .Values.api.join.secretName -}}
+{{- $endpoint := .Values.api.flame.endpoint -}}
+{{- if .Values.cluster.enabled -}}
+{{- $endpoint = default (printf "https://%s-session-manager.%s.svc:8080" .Values.nameOverride .Release.Namespace) $endpoint -}}
+{{- if not $tls.caConfigMap -}}
+{{- $_ := set $tls "caConfigMap" .Values.gateway.issuerName -}}
+{{- end -}}
+{{- if not $joinSecret -}}
+{{- $joinSecret = printf "%s-join" .Values.nameOverride -}}
+{{- end -}}
+{{- end -}}
+{{- $endpoint = required "api.flame.endpoint is required when cluster.enabled=false" $endpoint -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "flame-console.fullname" . }}
+  name: {{ include "flame-cluster.api.fullname" . }}
   labels:
-    {{- include "flame-console.labels" . | nindent 4 }}
+    {{- include "flame-cluster.api.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.api.replicaCount }}
   strategy:
     type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ .Chart.Name }}
       app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
   template:
     metadata:
       labels:
-        {{- include "flame-console.labels" . | nindent 8 }}
+        {{- include "flame-cluster.api.labels" . | nindent 8 }}
     spec:
       automountServiceAccountToken: false
 
@@ -24,14 +38,14 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         fsGroup: 10001
-      {{- with .Values.imagePullSecrets }}
+      {{- with .Values.api.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: flame-console
-          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+        - name: flame-cluster
+          image: {{ printf "%s:%s" .Values.api.image.repository .Values.api.image.tag | quote }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -43,16 +57,16 @@ spec:
           env:
             - {name: CONSOLE_BIND, value: "0.0.0.0:3000"}
             - name: CONSOLE_ALLOWED_HOSTS
-              value: {{ join "," (required "security.allowedHosts must contain trusted API/UI hostnames" .Values.security.allowedHosts) | quote }}
+              value: {{ join "," (required "api.security.allowedHosts must contain trusted API/UI hostnames" .Values.api.security.allowedHosts) | quote }}
             - name: FLAME_ENDPOINT
-              value: {{ required "flame.endpoint must be the direct FLM endpoint" .Values.flame.endpoint | quote }}
+              value: {{ $endpoint | quote }}
             - name: FLAME_NAME
-              value: {{ .Values.flame.name | quote }}
-            {{- if .Values.join.secretName }}
+              value: {{ default .Values.nameOverride .Values.api.flame.name | quote }}
+            {{- if $joinSecret }}
             - {name: FLAME_JOIN_TOKEN_FILE, value: "/etc/flame/join/token"}
             - {name: FLAME_JOIN_EXPIRY_FILE, value: "/etc/flame/join/expiresAt"}
             {{- end }}
-            {{- with .Values.flame.tls.domain }}
+            {{- with $tls.domain }}
             - {name: FLAME_TLS_DOMAIN, value: {{ . | quote }}}
             {{- end }}
             {{- if or $tls.caConfigMap $tls.secretName }}
@@ -69,11 +83,11 @@ spec:
           livenessProbe:
             httpGet: {path: /healthz, port: http}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.api.resources | nindent 12 }}
           volumeMounts:
             - name: temporary
               mountPath: /tmp
-            {{- if .Values.join.secretName }}
+            {{- if $joinSecret }}
             - {name: flame-join, mountPath: /etc/flame/join, readOnly: true}
             {{- end }}
             {{- if or $tls.caConfigMap $tls.secretName }}
@@ -82,10 +96,10 @@ spec:
       volumes:
         - name: temporary
           emptyDir: {}
-        {{- if .Values.join.secretName }}
+        {{- if $joinSecret }}
         - name: flame-join
           secret:
-            secretName: {{ .Values.join.secretName | quote }}
+            secretName: {{ $joinSecret | quote }}
             optional: true
             items:
               - {key: token, path: token}
@@ -114,15 +128,16 @@ spec:
                     {{- end }}
               {{- end }}
         {{- end }}
-      {{- with .Values.nodeSelector }}
+      {{- with .Values.api.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with .Values.api.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- with .Values.api.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

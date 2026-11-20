@@ -189,8 +189,8 @@ grep -Eq 'Failed:[[:space:]]+0' "$runtime/executor-probe.log"
 bash ci/test-flamepy.sh "$runtime"
 
 # A real refused connection must be an error, never a successful empty list.
-"${kube[@]}" set env deployment/flame-console FLAME_ENDPOINT=https://127.0.0.1:1
-"${kube[@]}" rollout status deployment/flame-console --timeout=120s
+"${kube[@]}" set env deployment/cluster FLAME_ENDPOINT=https://127.0.0.1:1
+"${kube[@]}" rollout status deployment/cluster --timeout=120s
 for attempt in {1..30}; do
   status="$(curl -sS --max-time 20 -o "$runtime/upstream-unavailable.json" -w '%{http_code}' "$base/api/applications")"
   # The Service briefly has no console endpoint during its Recreate rollout.
@@ -199,8 +199,8 @@ for attempt in {1..30}; do
   [[ "$attempt" != 30 ]] || { cat "$runtime/upstream-unavailable.json" >&2; exit 1; }
   sleep 1
 done
-"${kube[@]}" set env deployment/flame-console FLAME_ENDPOINT=https://flame-session-manager:8080
-"${kube[@]}" rollout status deployment/flame-console --timeout=120s
+"${kube[@]}" set env deployment/cluster FLAME_ENDPOINT=https://flame-session-manager:8080
+"${kube[@]}" rollout status deployment/cluster --timeout=120s
 for attempt in {1..30}; do
   if get '/api/applications?pageSize=100' > "$runtime/recovered-applications.json" && jq -e 'any(.items[]; .metadata.name=="flame-ci-ping")' "$runtime/recovered-applications.json" >/dev/null; then break; fi
   [[ "$attempt" != 30 ]] || exit 1
@@ -232,7 +232,7 @@ get '/api/applications?pageSize=100' | jq -e 'any(.items[]; .metadata.name=="fla
 bash ci/test-flmlet.sh "$runtime"
 
 # Reads and mutations succeeded with no Kubernetes token in the console.
-"${kube[@]}" get deployment flame-console -o json | jq -e '.spec.template.spec.automountServiceAccountToken==false' >/dev/null
+"${kube[@]}" get deployment cluster -o json | jq -e '.spec.template.spec.automountServiceAccountToken==false' >/dev/null
 python3 - "$runtime" <<'PY'
 import json,sys
 from pathlib import Path

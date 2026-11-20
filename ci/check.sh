@@ -8,9 +8,7 @@ diff -u charts/flame-operator/crds/flameclusters.yaml "${TMPDIR:-/tmp}/flameclus
 cargo run --locked -p flame-api --bin crdgen -- worker > "${TMPDIR:-/tmp}/flameworkers.yaml"
 diff -u charts/flame-operator/crds/flameworkers.yaml "${TMPDIR:-/tmp}/flameworkers.yaml"
 helm lint charts/flame-operator
-helm lint charts/flame-console --set flame.endpoint=https://flame-session-manager:8080 --set flame.tls.caConfigMap=flame-client-ca
 helm lint charts/flame-ui
-helm lint charts/flame-worker --set address=192.168.1.10
 helm lint charts/flame-cluster --set gateway.hostname=flame.example.test
 for script in ci/*.sh; do bash -n "$script"; done
 

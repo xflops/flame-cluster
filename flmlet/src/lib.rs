@@ -1,4 +1,4 @@
-//! Host reconciliation for SRE-installed Flame binaries and explicitly scoped worker credentials.
+//! Host runtime installation and reconciliation with explicitly scoped worker credentials.
 use flame_api::{
     Condition, FlameCluster, FlameWorker, FlameWorkerStatus, HostServiceStatus, validation,
 };
@@ -113,6 +113,13 @@ pub trait Host {
     fn write_atomic(&mut self, path: &Path, bytes: &[u8], mode: u32) -> Result<()>;
     fn executable(&mut self, path: &Path) -> bool;
     fn command(&mut self, program: &Path, args: &[String]) -> Result<CommandOutput>;
+    fn bootstrap(
+        &mut self,
+        settings: &Settings,
+        version: &str,
+        python: &str,
+        force: bool,
+    ) -> Result<()>;
     fn hostname(&mut self) -> Result<String>;
     fn tcp_ready(&mut self, address: std::net::SocketAddrV4) -> bool;
 }
@@ -391,6 +398,9 @@ fn installed_version(host: &mut impl Host, settings: &Settings) -> Result<Option
             return Ok(Some(value));
         }
     }
+    if !host.executable(&settings.prefix.join("bin/flame-executor-manager")) {
+        return Ok(None);
+    }
     let result = command(
         host,
         &settings.prefix.join("bin/flame-executor-manager"),
@@ -534,21 +544,9 @@ fn conditions(
 fn validate_host(
     host: &mut impl Host,
     settings: &Settings,
-    worker: &FlameWorker,
+    _worker: &FlameWorker,
     desired: &Desired,
 ) -> Result<Option<String>> {
-    for binary in ["flame-executor-manager", "flmctl"].into_iter().chain(
-        worker
-            .spec
-            .manage_object_cache
-            .then_some("flame-object-cache"),
-    ) {
-        if !host.executable(&settings.prefix.join("bin").join(binary)) {
-            return Err(Error::Invalid(format!(
-                "SRE-installed binary {binary} is missing or not executable"
-            )));
-        }
-    }
     // Check every unit before making any file or service changes.
     for unit in desired.units.keys() {
         if let Some(bytes) = host.read(&settings.unit_path(unit))?
@@ -574,7 +572,80 @@ fn validate_host(
     installed_version(host, settings)
 }
 
-/// Read-only installation preflight, including local executable/version and ownership checks.
+fn runtime_missing(host: &mut impl Host, settings: &Settings, worker: &FlameWorker) -> bool {
+    ["flame-executor-manager", "flmctl"]
+        .into_iter()
+        .chain(
+            worker
+                .spec
+                .manage_object_cache
+                .then_some("flame-object-cache"),
+        )
+        .any(|binary| !host.executable(&settings.prefix.join("bin").join(binary)))
+}
+
+fn bootstrap_needed(
+    host: &mut impl Host,
+    settings: &Settings,
+    worker: &FlameWorker,
+    desired: &Desired,
+    version: Option<&str>,
+) -> Result<bool> {
+    let needed =
+        runtime_missing(host, settings, worker) || !version_matches(&desired.version, version);
+    if needed {
+        let existing = ["flame-executor-manager", "flmctl", "flame-object-cache"]
+            .iter()
+            .any(|binary| host.executable(&settings.prefix.join("bin").join(binary)));
+        let owned = host
+            .read(&settings.unit_path(FEM))?
+            .is_some_and(|bytes| settings.owns(&bytes));
+        if existing && !owned && !settings.adopt_existing {
+            return Err(Error::Invalid(
+                "refusing to replace an unowned Flame runtime; use --adopt-existing explicitly"
+                    .into(),
+            ));
+        }
+        for tool in ["curl", "sh", "tar"] {
+            if !host.executable(Path::new(tool)) {
+                return Err(Error::Invalid(format!("runtime bootstrap requires {tool}")));
+            }
+        }
+    }
+    Ok(needed)
+}
+
+fn ensure_runtime(
+    host: &mut impl Host,
+    settings: &Settings,
+    worker: &FlameWorker,
+    desired: &Desired,
+) -> Result<(Option<String>, bool)> {
+    let version = validate_host(host, settings, worker, desired)?;
+    if bootstrap_needed(host, settings, worker, desired, version.as_deref())? {
+        let force = ["flame-executor-manager", "flmctl", "flame-object-cache"]
+            .iter()
+            .any(|binary| host.executable(&settings.prefix.join("bin").join(binary)));
+        host.bootstrap(
+            settings,
+            &desired.version,
+            &worker.spec.python_version,
+            force,
+        )?;
+        let installed = installed_version(host, settings)?;
+        if runtime_missing(host, settings, worker)
+            || !version_matches(&desired.version, installed.as_deref())
+        {
+            return Err(Error::Invalid(
+                "Flame installer did not provide the selected runtime".into(),
+            ));
+        }
+        return Ok((installed, true));
+    }
+    Ok((version, false))
+}
+
+/// Read-only preflight. Missing runtimes are accepted when bootstrap can proceed safely.
 pub fn preflight(
     host: &mut impl Host,
     settings: &Settings,
@@ -583,26 +654,26 @@ pub fn preflight(
 ) -> Result<Desired> {
     let desired = desired(settings, worker, cluster)?;
     let version = validate_host(host, settings, worker, &desired)?;
-    if !version_matches(&desired.version, version.as_deref()) {
-        return Err(Error::Invalid(format!(
-            "installed Flame version {:?} does not match selected {}; SRE installation is required",
-            version, desired.version
-        )));
-    }
+    bootstrap_needed(host, settings, worker, &desired, version.as_deref())?;
     Ok(desired)
 }
 
-fn write_desired(host: &mut impl Host, settings: &Settings, desired: &Desired) -> Result<bool> {
+fn write_desired(
+    host: &mut impl Host,
+    settings: &Settings,
+    desired: &Desired,
+    force: bool,
+) -> Result<bool> {
     let mut changed = false;
     for (path, contents) in &desired.files {
-        if host.read(path)?.as_deref() != Some(contents.as_bytes()) {
+        if force || host.read(path)?.as_deref() != Some(contents.as_bytes()) {
             host.write_atomic(path, contents.as_bytes(), 0o600)?;
             changed = true;
         }
     }
     for (unit, contents) in &desired.units {
         let path = settings.unit_path(unit);
-        if host.read(&path)?.as_deref() != Some(contents.as_bytes()) {
+        if force || host.read(&path)?.as_deref() != Some(contents.as_bytes()) {
             host.write_atomic(&path, contents.as_bytes(), 0o644)?;
             changed = true;
         }
@@ -623,7 +694,8 @@ pub fn configure(
         ));
     }
     let desired = preflight(host, settings, worker, cluster)?;
-    let changed = write_desired(host, settings, &desired)?;
+    let (_, installed) = ensure_runtime(host, settings, worker, &desired)?;
+    let changed = write_desired(host, settings, &desired, installed)?;
     if changed {
         host.write_atomic(&settings.conf("flmlet-applied-hash"), b"", 0o600)?;
     }
@@ -686,29 +758,7 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
         }
         Err(error) => return Err(error),
     };
-    let version = validate_host(host, settings, worker, &desired)?;
-    if !version_matches(&desired.version, version.as_deref()) {
-        let status = FlameWorkerStatus {
-            observed_generation: worker.metadata.generation.unwrap_or(0),
-            last_heartbeat_time: chrono::Utc::now().to_rfc3339(),
-            installed_version: version,
-            conditions: conditions(
-                worker,
-                false,
-                false,
-                "VersionMismatch",
-                "Installed Flame version does not match the selected cluster version; SRE installation is required",
-            ),
-            fem: service(host, FEM),
-            object_cache: worker.spec.manage_object_cache.then(|| service(host, FOC)),
-            ..Default::default()
-        };
-        return Ok(Outcome {
-            status: Some(status),
-            changed: false,
-            ready: false,
-        });
-    }
+    let (version, installed) = ensure_runtime(host, settings, worker, &desired)?;
     let hash = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(
@@ -718,7 +768,7 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
     let applied = settings.conf("flmlet-applied-hash");
     let previous = host.read(&applied)?;
     let mut changed = previous.as_deref() != Some(hash.as_bytes());
-    changed |= write_desired(host, settings, &desired)?;
+    changed |= write_desired(host, settings, &desired, installed)?;
     if !worker.spec.manage_object_cache
         && host
             .read(&settings.unit_path(FOC))?

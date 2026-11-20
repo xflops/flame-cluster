@@ -17,11 +17,13 @@ For each cluster, the operator manages one session-manager Deployment, a
 retained PVC, configuration, a NodePort Service, external cache Services and
 EndpointSlices, cert-manager Certificates, EnvoyProxy, Gateway, HTTPRoutes, and
 client identity policies. It registers hosts through rotating join tokens and
-issues worker credentials. SREs prepare the host runtime; `setup.sh --join TOKEN`
+issues worker credentials. SREs prepare host workload runtimes and networking;
+`setup.sh --join TOKEN`
 creates a namespaced `FlameWorker` and generates FEM configuration. Copy the
 current command and expiration from the UI's **Settings → Join a node** section.
 The local
-`flmlet` reconciles host systemd services and reports actual service and Flame
+`flmlet` installs FEM using upstream Flame setup with service startup suppressed,
+prepares the cluster configuration, then starts and reconciles host systemd services and reports actual service and Flame
 registration health.
 
 `spec.version` selects the session-manager release and defaults to `latest`.

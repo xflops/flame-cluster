@@ -19,6 +19,9 @@ struct FakeHost {
     node_pages: BTreeMap<usize, Value>,
     cache_ready: bool,
     fail_restart: bool,
+    fail_bootstrap: bool,
+    events: Vec<String>,
+    bootstraps: Vec<(String, String, bool)>,
 }
 impl FakeHost {
     fn healthy() -> Self {
@@ -52,6 +55,7 @@ impl Host for FakeHost {
         Ok(self.files.get(path).cloned())
     }
     fn write_atomic(&mut self, path: &Path, bytes: &[u8], _: u32) -> Result<()> {
+        self.events.push("configure".into());
         self.writes.push(path.into());
         self.files.insert(path.into(), bytes.into());
         Ok(())
@@ -93,6 +97,7 @@ impl Host for FakeHost {
                     });
                 }
                 "start" | "restart" => {
+                    self.events.push("start".into());
                     if self.fail_restart {
                         return Ok(CommandOutput {
                             success: false,
@@ -138,6 +143,23 @@ impl Host for FakeHost {
             success: true,
             ..Default::default()
         })
+    }
+    fn bootstrap(
+        &mut self,
+        settings: &Settings,
+        version: &str,
+        python: &str,
+        force: bool,
+    ) -> Result<()> {
+        self.events.push("install".into());
+        self.bootstraps.push((version.into(), python.into(), force));
+        if self.fail_bootstrap {
+            return Err(Error::Command("installer failed".into()));
+        }
+        self.missing.clear();
+        self.files
+            .insert(settings.prefix.join("VERSION"), version.as_bytes().to_vec());
+        Ok(())
     }
     fn hostname(&mut self) -> Result<String> {
         Ok("actual-host".into())
@@ -374,25 +396,36 @@ fn failed_restart_does_not_commit_applied_hash_and_is_retried() {
     );
 }
 #[test]
-fn pinned_version_mismatch_does_not_install_download_or_mutate_healthy_services() {
+fn pinned_version_mismatch_installs_before_reconfiguration_and_latest_does_not_poll() {
     let mut host = FakeHost::healthy();
-    host.active.insert(FEM.into());
+    run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    host.events.clear();
     let mut cluster = cluster();
     cluster.spec.version = "v0.9.0".into();
-    let outcome = run(&mut host, &settings(), &worker(), &cluster).unwrap();
-    assert!(!outcome.ready && !outcome.changed);
-    assert_eq!(
-        outcome.status.unwrap().conditions[1].reason,
-        "VersionMismatch"
-    );
-    assert!(host.writes.is_empty() && host.mutations().is_empty());
-    cluster.spec.version = "latest".into();
     assert!(
         run(&mut host, &settings(), &worker(), &cluster)
             .unwrap()
             .ready
     );
+    assert_eq!(host.events.first().map(String::as_str), Some("install"));
+    assert_eq!(host.bootstraps.len(), 1);
+    assert!(host.bootstraps[0].2);
+    let configured = host
+        .events
+        .iter()
+        .position(|event| event == "configure")
+        .unwrap();
+    let started = host
+        .events
+        .iter()
+        .position(|event| event == "start")
+        .unwrap();
+    assert!(configured < started);
+    cluster.spec.version = "latest".into();
+    run(&mut host, &settings(), &worker(), &cluster).unwrap();
+    assert_eq!(host.bootstraps.len(), 1);
 }
+
 #[test]
 fn live_registration_and_managed_cache_readiness_are_required() {
     let mut host = FakeHost::healthy();
@@ -474,7 +507,7 @@ fn explicit_credential_revocation_stops_only_owned_services() {
 }
 
 #[test]
-fn preflight_is_read_only_and_rejects_foreign_units_and_wrong_version() {
+fn preflight_is_read_only_and_rejects_foreign_units_and_unowned_runtime() {
     let mut host = FakeHost::healthy();
     flmlet::preflight(&mut host, &settings(), &worker(), &cluster()).unwrap();
     assert!(host.writes.is_empty() && host.mutations().is_empty());
@@ -698,4 +731,79 @@ fn generated_units_pass_systemd_analyze_with_literal_paths() {
             );
         }
     }
+}
+
+fn empty_runtime() -> FakeHost {
+    let mut host = FakeHost::healthy();
+    host.files.remove(&PathBuf::from("/srv/flame/VERSION"));
+    for binary in ["flame-executor-manager", "flmctl", "flame-object-cache"] {
+        host.missing
+            .insert(PathBuf::from(format!("/srv/flame/bin/{binary}")));
+    }
+    host
+}
+
+#[test]
+fn first_join_installs_then_configures_then_starts_and_is_idempotent() {
+    let mut host = empty_runtime();
+    flmlet::preflight(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    assert!(host.events.is_empty() && host.bootstraps.is_empty());
+    assert!(flmlet::configure(&mut host, &settings(), &worker(), &cluster()).unwrap());
+    assert_eq!(host.events[0], "install");
+    assert!(host.events[1..].iter().all(|event| event == "configure"));
+    assert!(host.mutations().is_empty());
+    assert!(
+        run(&mut host, &settings(), &worker(), &cluster())
+            .unwrap()
+            .ready
+    );
+    let configured = host
+        .events
+        .iter()
+        .position(|event| event == "configure")
+        .unwrap();
+    let started = host
+        .events
+        .iter()
+        .position(|event| event == "start")
+        .unwrap();
+    assert!(configured < started);
+    assert_eq!(host.bootstraps.len(), 1);
+    assert!(!host.bootstraps[0].2);
+    assert!(
+        !run(&mut host, &settings(), &worker(), &cluster())
+            .unwrap()
+            .changed
+    );
+    assert_eq!(host.bootstraps.len(), 1);
+}
+
+#[test]
+fn failed_bootstrap_never_writes_configuration_or_starts_services() {
+    let mut host = empty_runtime();
+    host.fail_bootstrap = true;
+    assert!(flmlet::configure(&mut host, &settings(), &worker(), &cluster()).is_err());
+    assert!(host.writes.is_empty() && host.mutations().is_empty());
+    assert!(run(&mut host, &settings(), &worker(), &cluster()).is_err());
+    assert!(host.writes.is_empty() && host.mutations().is_empty());
+}
+
+#[test]
+fn bootstrap_checks_foreign_ownership_before_installing() {
+    let mut host = empty_runtime();
+    host.files
+        .insert(settings().systemd_dir.join(FEM), b"# foreign".to_vec());
+    assert!(flmlet::configure(&mut host, &settings(), &worker(), &cluster()).is_err());
+    assert!(host.events.is_empty());
+}
+
+#[test]
+fn read_only_preflight_accepts_managed_version_mismatch() {
+    let mut host = FakeHost::healthy();
+    flmlet::configure(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    let mut cluster = cluster();
+    cluster.spec.version = "v0.9.0".into();
+    host.events.clear();
+    flmlet::preflight(&mut host, &settings(), &worker(), &cluster).unwrap();
+    assert!(host.events.is_empty());
 }

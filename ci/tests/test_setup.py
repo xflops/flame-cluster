@@ -58,8 +58,8 @@ class Installer(unittest.TestCase):
         write(self.bin / 'helm', '''#!/bin/sh
 printf 'helm %s\\n' "$*" >> "$INSTALL_TEST_LOG"
 case "$*" in
-  *template*flame-cluster*) printf 'nodePort: 30080\\ngateway:\\n  className: flame-envoy\\n  issuerName: flame-client-ca\\n  sessionPort: %s\\n  cachePort: 31443\\n' "${INSTALL_TEST_SESSION_PORT:-30443}" ;;
-  *template*flame-console*) [ "${INSTALL_TEST_BAD_RENDER:-0}" != 1 ] ;;
+  *'template flame-cluster '*) printf 'nodePort: 30080\\ngateway:\\n  className: flame-envoy\\n  issuerName: flame-client-ca\\n  sessionPort: %s\\n  cachePort: 31443\\n' "${INSTALL_TEST_SESSION_PORT:-30443}" ;;
+  *'template flame-ui '*) [ "${INSTALL_TEST_BAD_RENDER:-0}" != 1 ] ;;
 esac
 ''')
         write(self.bin / 'kubectl', '''#!/bin/sh
@@ -73,7 +73,7 @@ esac
         write(self.bin / 'id', '#!/bin/sh\nprintf "0\\n"\n')
         write(self.bin / 'uname', '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
         write(self.bin / 'systemctl', '#!/bin/sh\nprintf "systemctl %s\\n" "$*" >> "$INSTALL_TEST_LOG"\n')
-        charts = {f'charts/{name}/Chart.yaml': f'name: {name}\nversion: 0.1.0\n' for name in ['flame-operator', 'flame-cluster', 'flame-console', 'flame-ui', 'flame-worker']}
+        charts = {f'charts/{name}/Chart.yaml': f'name: {name}\nversion: 0.1.0\n' for name in ['flame-operator', 'flame-cluster', 'flame-ui']}
         charts['charts/flame-operator/crds/flameclusters.yaml'] = 'kind: CustomResourceDefinition\n'
         archive(self.artifacts / 'flame-cluster-charts.tar.gz', charts)
         archive(self.artifacts / 'flmlet-linux-amd64.tar.gz', {'bin/flmlet': '#!/bin/sh\nprintf "flmlet-check %s\\n" "$*" >> "$INSTALL_TEST_LOG"\nexit "${INSTALL_TEST_CHECK_EXIT:-0}"\n', 'LICENSE': 'Apache-2.0\n'})
@@ -160,6 +160,21 @@ esac
     def worker_args(self):
         return ('--join', '--token-file', str(self.token), '--worker', 'worker-01', '--address', '192.168.3.8', '--shims', 'host', '--prefix', str(self.prefix), '--systemd-dir', str(self.systemd))
 
+    def assert_ui_exposure(self, result, address, kube_host):
+        operations = self.operations().splitlines()
+        ui_invocations = [line for line in operations if 'template flame-ui ' in line or '--install flame-ui ' in line]
+        self.assertEqual(len(ui_invocations), 2)
+        for invocation in ui_invocations:
+            self.assertIn(f'service.externalIPs[0]={address}', invocation)
+        cluster_invocations = [line for line in operations if 'template flame-cluster ' in line or '--install flame-cluster ' in line]
+        self.assertEqual(len(cluster_invocations), 2)
+        for invocation in cluster_invocations:
+            encoded = invocation.split('--set-json api.security.allowedHosts=', 1)[1]
+            hosts, _ = json.JSONDecoder().raw_decode(encoded)
+            self.assertTrue({'localhost', '127.0.0.1', '::1', address, kube_host}.issubset(hosts))
+        self.assertIn(f'Console: http://{address}/', result.stdout)
+        self.assertNotIn('port-forward', result.stdout)
+
     def test_help_never_reads_cluster_or_writes_host(self):
         result = self.run_setup('--help')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -171,12 +186,13 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         operations = self.operations().splitlines()
         self.assertTrue(any('config view --minify' in line for line in operations))
-        cluster_invocations = [line for line in operations if 'helm template flame-cluster ' in line or '--install flame-cluster ' in line]
+        cluster_invocations = [line for line in operations if 'template flame-cluster ' in line or '--install flame-cluster ' in line]
         self.assertEqual(len(cluster_invocations), 2)
         for invocation in cluster_invocations:
             self.assertIn('gateway.hostname=192.168.3.10', invocation)
             self.assertIn('endpointHost=192.168.3.10', invocation)
             self.assertIn('kubernetesEndpoint=https://192.168.3.10:6443', invocation)
+        self.assert_ui_exposure(result, '192.168.3.10', '192.168.3.10')
 
     def test_explicit_kubeconfig_is_used_for_endpoint_discovery(self):
         kubeconfig = self.root / 'selected-kubeconfig'
@@ -188,12 +204,41 @@ esac
         self.assertIn('gateway.hostname=192.168.3.20', operations)
         self.assertIn('endpointHost=192.168.3.20', operations)
         self.assertIn('kubernetesEndpoint=https://192.168.3.20:7443', operations)
+        self.assert_ui_exposure(result, '192.168.3.20', '192.168.3.20')
+
+    def test_ui_address_override_is_independent_from_worker_frontend(self):
+        result = self.run_setup('--ui-address', '100.117.27.41')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_ui_exposure(result, '100.117.27.41', '192.168.3.10')
+        self.assertIn('endpointHost=192.168.3.10', self.operations())
+
+    def test_non_lan_kubeconfig_ui_address_keeps_explicit_worker_frontend(self):
+        result = self.run_setup('--endpoint', '192.168.3.10:30080', INSTALL_TEST_KUBE_SERVER='https://100.117.27.41:6443')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_ui_exposure(result, '100.117.27.41', '100.117.27.41')
+        self.assertIn('endpoint=192.168.3.10:30080', self.operations())
+
+    def test_loopback_kind_kubeconfig_uses_explicit_reachable_endpoints(self):
+        result = self.run_setup('--endpoint', '192.168.3.10:30080', '--ui-address', '192.168.3.10', '--kubernetes-endpoint', 'https://192.168.3.10:6443', INSTALL_TEST_KUBE_SERVER='https://127.0.0.1:45678')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_ui_exposure(result, '192.168.3.10', '127.0.0.1')
+        cluster_invocations = [line for line in self.operations().splitlines() if 'template flame-cluster ' in line or '--install flame-cluster ' in line]
+        for invocation in cluster_invocations:
+            self.assertIn('endpoint=192.168.3.10:30080', invocation)
+            self.assertIn('kubernetesEndpoint=https://192.168.3.10:6443', invocation)
+
+    def test_invalid_ui_address_changes_nothing(self):
+        for address in ['gateway.example.test', 'http://192.168.3.10', '192.168.3.10:80', '::1', '999.1.2.3']:
+            with self.subTest(address=address):
+                result = self.run_setup('--ui-address', address)
+                self.assertNotEqual(result.returncode, 0)
+                self.no_install()
 
     def test_endpoint_overrides_are_preserved(self):
         result = self.run_setup('--hostname', 'gateway.example.test', '--endpoint', '192.168.3.30:32080', '--kubernetes-endpoint', 'https://enroll.example.test:6443')
         self.assertEqual(result.returncode, 0, result.stderr)
         for invocation in self.operations().splitlines():
-            if 'helm template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
+            if 'template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
                 self.assertIn('gateway.hostname=gateway.example.test', invocation)
                 self.assertIn('endpoint=192.168.3.30:32080', invocation)
                 self.assertIn('kubernetesEndpoint=https://enroll.example.test:6443', invocation)
@@ -204,7 +249,7 @@ esac
         result = self.run_setup('--values', str(values))
         self.assertEqual(result.returncode, 0, result.stderr)
         for invocation in self.operations().splitlines():
-            if 'helm template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
+            if 'template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
                 self.assertIn(f'--values {values}', invocation)
                 self.assertIn('endpointHost=192.168.3.10', invocation)
                 self.assertNotIn('--set-string endpoint=', invocation)
@@ -248,27 +293,30 @@ esac
         operations = self.operations().splitlines()
         rendered = [index for index, line in enumerate(operations) if 'helm template' in line]
         writes = [index for index, line in enumerate(operations) if 'kubectl apply' in line or 'helm upgrade' in line]
-        self.assertEqual(len(rendered), 4)
+        self.assertEqual(len(rendered), 3)
         self.assertLess(max(rendered), min(writes))
         upgrades = [line for line in operations if 'helm upgrade' in line]
-        self.assertEqual(len(upgrades), 4)
-        self.assertTrue(all(any(f'--install {chart} ' in line for chart in ['flame-operator', 'flame-cluster', 'flame-console', 'flame-ui']) for line in upgrades))
+        self.assertEqual(len(upgrades), 3)
+        self.assertTrue(all(any(f'--install {chart} ' in line for chart in ['flame-operator', 'flame-cluster', 'flame-ui']) for line in upgrades))
         self.assertNotIn('--install flame-worker', '\n'.join(upgrades))
         self.assertIn('image.tag=sha-test-amd64', '\n'.join(upgrades))
         self.assertIn('kubernetesEndpoint=https://api.example.test:6443', '\n'.join(upgrades))
-        console = next(line for line in upgrades if '--install flame-console ' in line)
-        self.assertIn('flame.endpoint=https://flame-session-manager.flame-system.svc:8080', console)
-        self.assertIn('flame.tls.caConfigMap=flame-client-ca', console)
-        self.assertNotIn('flame.tls.secretName=', self.operations())
-        self.assertNotIn('flame-control-plane-tls', self.operations())
-        console_render = next(line for line in operations if 'helm template flame-console ' in line)
-        for invocation in (console, console_render):
-            self.assertIn('flame.name=flame', invocation)
-            self.assertIn('join.secretName=flame-join', invocation)
-        self.assertIn('flame.tls.caConfigMap=flame-client-ca', console_render)
-        self.assertIn('flame.tls.caKey=ca.crt', console)
-        self.assertIn('flame.tls.certKey= ', console)
-        self.assertIn('flame.tls.keyKey= ', console)
+        self.assertNotIn('--install flame-cluster-api ', '\n'.join(upgrades))
+        self.assertNotIn('charts/flame-cluster-api', self.operations())
+        cluster = next(line for line in upgrades if '--install flame-cluster ' in line)
+        self.assertIn('api.image.tag=sha-test-amd64', cluster)
+        cluster_render = next(line for line in operations if 'template flame-cluster ' in line)
+        self.assertIn('api.image.tag=sha-test-amd64', cluster_render)
+        self.assertNotIn('api.flame.endpoint=', self.operations())
+        ui = next(line for line in upgrades if '--install flame-ui ' in line)
+        self.assertIn('consoleUpstream=cluster.flame-system.svc:3000', ui)
+
+    def test_explicit_console_endpoint_configures_merged_cluster_api(self):
+        result = self.run_setup('--console-endpoint', 'https://external-flm.example.test:8080')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for invocation in self.operations().splitlines():
+            if 'template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
+                self.assertIn('api.flame.endpoint=https://external-flm.example.test:8080', invocation)
 
 
     def test_invalid_join_token_never_installs(self):
@@ -335,7 +383,21 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.no_install()
 
-    def test_join_installs_only_flmlet_and_private_kubeconfig(self):
+    def test_join_without_preinstalled_runtime_delegates_bootstrap_to_flmlet(self):
+        (self.prefix / 'bin/flame-executor-manager').unlink()
+        (self.prefix / 'bin').rmdir()
+        self.prefix.rmdir()
+        result = self.run_setup(*self.worker_args())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.prefix / 'bin/flmlet').is_file())
+        invocations = [line for line in self.operations().splitlines() if line.startswith('flmlet-check ')]
+        self.assertEqual(len(invocations), 2)
+        self.assertIn('--check', invocations[0])
+        self.assertIn('--configure', invocations[1])
+        self.assertIn(f'--prefix {self.prefix}', invocations[1])
+        self.assertLess(self.operations().index('--configure'), self.operations().index('systemctl restart'))
+
+    def test_join_installs_flmlet_and_private_kubeconfig(self):
         result = self.run_setup(*self.worker_args())
         self.assertEqual(result.returncode, 0, result.stderr)
         config = self.prefix / 'conf/flmlet/kubeconfig'
@@ -348,6 +410,17 @@ esac
         self.assertIn('systemctl restart flmlet.service', self.operations())
         self.assertNotIn('helm ', self.operations())
         self.assertNotIn('kubectl ', self.operations())
+
+    def test_rejected_fresh_host_join_removes_new_enrollment_directories(self):
+        (self.prefix / 'bin/flame-executor-manager').unlink()
+        (self.prefix / 'bin').rmdir()
+        self.prefix.rmdir()
+        self.enroll_status = 403
+        result = self.run_setup(*self.worker_args())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('HTTP 403', result.stderr)
+        self.assertFalse(self.prefix.exists())
+        self.no_install()
 
     def test_existing_service_for_another_worker_requires_explicit_adoption(self):
         service = '# Managed by Flame Cluster setup.sh\nExecStart=/bin/flmlet --worker "another-worker" --namespace "flame-system"\n'

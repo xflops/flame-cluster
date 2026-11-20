@@ -1,11 +1,11 @@
-# Flame Console
+# Flame Cluster API
 
-`flame-console` serves the REST API used by `flame-ui`. It connects directly to one
+`flame-cluster` serves the REST API used by `flame-ui`. It connects directly to one
 configured Flame Frontend (FLM). It requires no Kubernetes credentials, resource
 access, service discovery, node agent, or logical manager.
 
 ```sh
-FLAME_ENDPOINT=http://flame-session-manager:8080 cargo run -p flame-console
+FLAME_ENDPOINT=http://flame-session-manager:8080 cargo run -p flame-cluster
 ```
 
 `FLAME_ENDPOINT` is required. `FLAME_NAME` optionally sets the display name (default
@@ -22,7 +22,7 @@ hostnames or IP addresses, without ports, wildcards, or credentials. It defaults
 to `localhost,127.0.0.1,::1`. Every `/api/` request requires one matching Host
 header; `/healthz` remains available for Kubernetes probes. Configure the exact
 public UI/SSO ingress hostname before exposing the UI, using Helm
-`security.allowedHosts` for the console chart. The UI proxy must preserve Host.
+`api.security.allowedHosts` in the combined cluster chart. The UI proxy must preserve Host.
 Session mutations also require any supplied Origin to match the full Host
 including its port. This protects against DNS rebinding; access authentication
 and authorization remain the SRE's responsibility.
@@ -46,8 +46,16 @@ retain meaningful HTTP status and reject cross-origin requests.
 
 Application responses omit credentials, environment variables and task payloads.
 The console does not expose a private-key download or Kubernetes settings API.
-To show the node join command in Settings, set Helm `join.secretName` to the
-operator's `<cluster>-join` Secret in the console namespace. The Secret is mounted
+The combined `charts/flame-cluster` chart deploys this API and the FlameCluster
+resource in one release. It uses image `docker.io/xflops/flame-cluster` and
+Service `cluster`. Backend values live under `api`; use
+`api.enabled=false` to omit it, or `cluster.enabled=false` with an explicit
+`api.flame.endpoint` to deploy only the API against an existing FLM.
+`CONSOLE_*` environment variable names remain supported.
+
+With the cluster enabled, Settings uses the operator's `<cluster>-join` Secret
+automatically. Set `api.join.secretName` to override that Secret in the API
+namespace. The Secret is mounted
 read-only; no Kubernetes client, service account token, or RBAC is added. Outside
 Helm, configure `FLAME_JOIN_TOKEN_FILE` and `FLAME_JOIN_EXPIRY_FILE` together with
 paths to its `token` and `expiresAt` contents. Each `/api/join` request reads the
@@ -59,5 +67,5 @@ that installer on the node before running it.
 SREs must restrict access to the UI/API because session actions use the configured
 FLM identity; this service does not add a separate user authorization system.
 
-`cargo test -p flame-console` runs a local mock FLM and generates temporary TLS
+`cargo test -p flame-cluster` runs a local mock FLM and generates temporary TLS
 credentials using OpenSSL; development and CI test hosts need the `openssl` CLI.

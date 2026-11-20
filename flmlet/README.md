@@ -13,6 +13,9 @@ worker host with `setup.sh` available. The repository's
 `setup.sh --join "$TOKEN"` uses that token to create its worker through the
 operator, then installs flmlet with a durable, worker-scoped local kubeconfig.
 Renewing the cluster bootstrap token does not disrupt already joined workers.
+The selected namespace's token chooses the Flame, for example
+`flame-ns-1/flame-1`. Worker identity and status access remain in that namespace;
+another namespace's objects and client Secrets are forbidden.
 Keep tokens and the local kubeconfig private. The worker identity can read only
 its own worker, read the selected FlameCluster, and patch its own status.
 
@@ -30,9 +33,9 @@ release does not provide a tenant security boundary for Host-shim execution.
 For manual diagnosis with already provisioned credentials:
 
 ```sh
-flmlet --worker flm-worker-01 --namespace flame-system \
+flmlet --worker flm-worker-01 --namespace flame-ns-1 \
   --kubeconfig /usr/local/flame/conf/flmlet/kubeconfig --check
-flmlet --worker flm-worker-01 --namespace flame-system \
+flmlet --worker flm-worker-01 --namespace flame-ns-1 \
   --kubeconfig /usr/local/flame/conf/flmlet/kubeconfig --once
 ```
 

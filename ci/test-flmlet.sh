@@ -26,7 +26,7 @@ wait_credentials_removed() {
 worker_pid() { worker_exec systemctl show "$1" --property=MainPID --value; }
 worker_once() {
   timeout 75 docker exec "$worker" /usr/local/flame/bin/flmlet --worker "$worker" \
-    --namespace flame-system --prefix /usr/local/flame \
+    --namespace "$flame_namespace" --prefix /usr/local/flame \
     --kubeconfig /usr/local/flame/conf/flmlet/kubeconfig "$@"
 }
 uid="$("${kube[@]}" get flameworker "$worker" -o jsonpath='{.metadata.uid}')"
@@ -74,9 +74,9 @@ umask 077
 mkdir -p "$runtime/secrets"
 bootstrap_token "$runtime/secrets/bootstrap-before.token"
 identity_before="$(worker_exec sha256sum /usr/local/flame/conf/flmlet/kubeconfig | cut -d' ' -f1)"
-"${kube[@]}" patch secret flame-join --type merge -p '{"stringData":{"expiresAt":"2000-01-01T00:00:00Z"}}' >/dev/null
+"${kube[@]}" patch secret "$flame_name-join" --type merge -p '{"stringData":{"expiresAt":"2000-01-01T00:00:00Z"}}' >/dev/null
 for attempt in {1..90}; do
-  if "${kube[@]}" get secret flame-join -o json | jq -er '.data.token|@base64d' > "$runtime/secrets/bootstrap-after.token" \
+  if "${kube[@]}" get secret "$flame_name-join" -o json | jq -er '.data.token|@base64d' > "$runtime/secrets/bootstrap-after.token" \
     && ! cmp -s "$runtime/secrets/bootstrap-before.token" "$runtime/secrets/bootstrap-after.token"; then break; fi
   [[ "$attempt" != 90 ]] || exit 1
   sleep 2

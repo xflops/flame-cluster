@@ -19,6 +19,7 @@ mutate() { curl --fail-with-body --silent --show-error -H 'Content-Type: applica
 
 # Install a real systemd host through the public join path and operator-issued token.
 bash ci/start-worker.sh "$runtime"
+bash ci/test-namespace-isolation.sh "$runtime"
 node_ip="$(kubectl get nodes -o json | jq -r '[.items[0].status.addresses[]|select(.type=="InternalIP")|.address][0]')"
 for attempt in {1..60}; do
   get '/api/nodes?pageSize=100&state=Ready' > "$runtime/nodes.json"
@@ -29,13 +30,13 @@ done
 
 # Wait for the operator to finish reconciling the SRE cache endpoint change.
 for attempt in {1..60}; do
-  if "${kube[@]}" get flamecluster flame -o json | jq -e '.status.observedGeneration==.metadata.generation and any(.status.conditions[]; .type=="Ready" and .status=="True")' >/dev/null; then break; fi
+  if "${kube[@]}" get flamecluster "$flame_name" -o json | jq -e '.status.observedGeneration==.metadata.generation and any(.status.conditions[]; .type=="Ready" and .status=="True")' >/dev/null; then break; fi
   [[ "$attempt" != 60 ]] || exit 1
   sleep 1
 done
 # Native FLM protects both raw NodePorts with server-authenticated TLS. No
 # client certificate is supplied here: native mTLS is intentionally not enabled.
-"${kube[@]}" get flamecluster flame -o json \
+"${kube[@]}" get flamecluster "$flame_name" -o json \
   | jq -er '.status.controlPlaneCa | select(type=="string" and length>0)' > "$runtime/control-plane-ca.crt"
 for port in 30080 30081; do
   timeout 20 openssl s_client -connect "$node_ip:$port" -verify_ip "$node_ip" \
@@ -70,7 +71,7 @@ jq -n --arg ip "$node_ip" '{serverIp:$ip,ports:[30080,30081],serverCertificateVe
 
 # A working generated client identity must reach the public Gateway endpoint.
 timeout 30 docker exec "$worker" /usr/local/flame/bin/flmctl --config /etc/flame-gateway/flame.yaml list -a > "$runtime/gateway-applications.txt"
-"${kube[@]}" get secret flame-client -o json | jq -er '.data["ca.crt"] | @base64d' > "$runtime/gateway-ca.crt"
+"${kube[@]}" get secret "$flame_name-client" -o json | jq -er '.data["ca.crt"] | @base64d' > "$runtime/gateway-ca.crt"
 # Inspect the TLS alert itself; an SDK's generic transport error is not proof.
 negative=0
 printf 'GET / HTTP/1.1\r\nHost: flame.e2e.test\r\nConnection: close\r\n\r\n' \
@@ -188,9 +189,18 @@ grep -Eq 'Failed:[[:space:]]+0' "$runtime/executor-probe.log"
 # Real SDK App/cache execution, not local mocks or successful empty reads.
 bash ci/test-flamepy.sh "$runtime"
 
-# A real refused connection must be an error, never a successful empty list.
-"${kube[@]}" set env deployment/cluster FLAME_ENDPOINT=https://127.0.0.1:1
-"${kube[@]}" rollout status deployment/cluster --timeout=120s
+# Managed connection state comes from the mounted catalog, not a global endpoint.
+"${management_kube[@]}" get configmap cluster-connections -o 'jsonpath={.data.connections\.json}' > "$runtime/connections-original.json"
+python3 - "$runtime" <<'PYCONNECTIONS'
+import json,sys
+from pathlib import Path
+root=Path(sys.argv[1]);original=json.loads((root/'connections-original.json').read_text())
+for name,values in [('restore',original),('unavailable',[dict(row,endpoint='https://127.0.0.1:1') if i==0 else row for i,row in enumerate(original)])]:
+    (root/f'connections-{name}.json').write_text(json.dumps({'data':{'connections.json':json.dumps(values)}}))
+PYCONNECTIONS
+"${management_kube[@]}" patch configmap cluster-connections --type merge --patch-file "$runtime/connections-unavailable.json"
+"${management_kube[@]}" rollout restart deployment/cluster
+"${management_kube[@]}" rollout status deployment/cluster --timeout=120s
 for attempt in {1..30}; do
   status="$(curl -sS --max-time 20 -o "$runtime/upstream-unavailable.json" -w '%{http_code}' "$base/api/applications")"
   # The Service briefly has no console endpoint during its Recreate rollout.
@@ -199,8 +209,9 @@ for attempt in {1..30}; do
   [[ "$attempt" != 30 ]] || { cat "$runtime/upstream-unavailable.json" >&2; exit 1; }
   sleep 1
 done
-"${kube[@]}" set env deployment/cluster FLAME_ENDPOINT=https://flame-session-manager:8080
-"${kube[@]}" rollout status deployment/cluster --timeout=120s
+"${management_kube[@]}" patch configmap cluster-connections --type merge --patch-file "$runtime/connections-restore.json"
+"${management_kube[@]}" rollout restart deployment/cluster
+"${management_kube[@]}" rollout status deployment/cluster --timeout=120s
 for attempt in {1..30}; do
   if get '/api/applications?pageSize=100' > "$runtime/recovered-applications.json" && jq -e 'any(.items[]; .metadata.name=="flame-ci-ping")' "$runtime/recovered-applications.json" >/dev/null; then break; fi
   [[ "$attempt" != 30 ]] || exit 1
@@ -212,14 +223,14 @@ done
 # fixture before startup reconciles the bundled flmping application manifest.
 mutate "$spare_session" close > "$runtime/action-close-spare.json"
 wait_session_state "$spare_session" 1
-helm upgrade flame-cluster charts/flame-cluster --namespace flame-system --reuse-values --set rolloutRevision=functional-restart
+helm upgrade flame-cluster charts/flame-cluster --namespace flame-system --reuse-values --set 'flames[0].rolloutRevision=functional-restart'
 for attempt in {1..60}; do
-  if "${kube[@]}" get deployment flame-session-manager -o json \
+  if "${kube[@]}" get deployment "$flame_name-session-manager" -o json \
     | jq -e '.spec.template.metadata.annotations["flame.xflops.io/rollout-revision"]=="functional-restart"' >/dev/null; then break; fi
   [[ "$attempt" != 60 ]] || exit 1
   sleep 1
 done
-"${kube[@]}" rollout status deployment/flame-session-manager --timeout=120s
+"${kube[@]}" rollout status "deployment/$flame_name-session-manager" --timeout=120s
 # TLS trust/status may disappear briefly during control-plane rollout. Require
 # fresh worker readiness rather than assuming its old registration/PIDs survived.
 wait_cluster_ready
@@ -231,8 +242,12 @@ get '/api/applications?pageSize=100' | jq -e 'any(.items[]; .metadata.name=="fla
 # Verify real host idempotence, rolling configuration and credential revocation.
 bash ci/test-flmlet.sh "$runtime"
 
-# Reads and mutations succeeded with no Kubernetes token in the console.
-"${kube[@]}" get deployment cluster -o json | jq -e '.spec.template.spec.automountServiceAccountToken==false' >/dev/null
+# Management may read exact enrollment Secrets, never client private keys.
+"${management_kube[@]}" get deployment cluster -o json | jq -e '.spec.template.spec.serviceAccountName=="cluster" and .spec.template.spec.automountServiceAccountToken==true' >/dev/null
+[[ "$(kubectl auth can-i get secret/flame-1-join --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-2-join --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i list secrets --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
 python3 - "$runtime" <<'PY'
 import json,sys
 from pathlib import Path

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # A real Linux systemd host on the disposable Kind network.
 worker=flame-ci-worker
-kube=(kubectl -n flame-system)
+flame_namespace=flame-ns-1
+flame_name=flame-1
+kube=(kubectl -n "$flame_namespace")
+management_kube=(kubectl -n flame-system)
 worker_exec() { docker exec "$worker" "$@"; }
 worker_exec_stdin() { docker exec -i "$worker" "$@"; }
 worker_cli() {
@@ -24,7 +27,7 @@ wait_worker_ready() {
 }
 wait_cluster_ready() {
   for attempt in {1..120}; do
-    if "${kube[@]}" get flamecluster flame -o json \
+    if "${kube[@]}" get flamecluster "$flame_name" -o json \
       | jq -e '.metadata.generation as $generation | .status.observedGeneration==$generation
         and (.status.controlPlaneCa | type=="string" and length>0)
         and any(.status.conditions[]; .type=="Ready" and .status=="True" and .observedGeneration==$generation)' >/dev/null; then return; fi
@@ -36,7 +39,7 @@ wait_cluster_ready() {
 bootstrap_token() {
   local output="${1:?token output path required}"
   for attempt in {1..90}; do
-    if "${kube[@]}" get secret flame-join -o json \
+    if "${kube[@]}" get secret "$flame_name-join" -o json \
       | jq -er '.data.token | @base64d' > "$output" 2>/dev/null; then return; fi
     sleep 2
   done

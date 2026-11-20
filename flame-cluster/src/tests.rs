@@ -12,6 +12,8 @@ use tower::ServiceExt;
 #[derive(Default)]
 struct Flame {
     fail_nodes: bool,
+    name_prefix: String,
+    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 #[tonic::async_trait]
 impl frontend_server::Frontend for Flame {
@@ -47,6 +49,7 @@ impl frontend_server::Frontend for Flame {
         request: GrpcRequest<CloseSessionRequest>,
     ) -> Result<GrpcResponse<Session>, Status> {
         let id = request.into_inner().session_id;
+        self.calls.lock().unwrap().push(format!("close:{id}"));
         if id == "wrong-state" {
             return Err(Status::failed_precondition("state changed"));
         }
@@ -130,6 +133,7 @@ impl frontend_server::Frontend for Flame {
         &self,
         request: GrpcRequest<ListNodesRequest>,
     ) -> Result<GrpcResponse<NodeList>, Status> {
+        self.calls.lock().unwrap().push("nodes".into());
         let mut paging = request.into_inner().paging.unwrap();
         assert_eq!(paging.limit, 12, "request only the displayed page");
         assert!(
@@ -146,7 +150,7 @@ impl frontend_server::Frontend for Flame {
                 .take(paging.limit as usize)
                 .map(|i| Node {
                     metadata: Some(Metadata {
-                        name: format!("worker-{}", i + 1),
+                        name: format!("{}worker-{}", self.name_prefix, i + 1),
                         id: String::new(),
                     }),
                     ..Default::default()
@@ -210,6 +214,10 @@ impl frontend_server::Frontend for Flame {
         request: GrpcRequest<ListTasksRequest>,
     ) -> Result<GrpcResponse<TaskList>, Status> {
         let request = request.into_inner();
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("tasks:{}", request.session_id));
         if request.session_id == "secret-error" {
             return Err(Status::internal("SYNTHETIC_SECRET_TASKS"));
         }
@@ -392,6 +400,308 @@ async fn connection_and_health_need_no_upstream_or_kubernetes() {
 }
 
 #[tokio::test]
+async fn configured_flames_keep_resources_mutations_and_join_credentials_isolated() {
+    use std::sync::{Arc, Mutex};
+    let first_calls = Arc::new(Mutex::new(Vec::new()));
+    let second_calls = Arc::new(Mutex::new(Vec::new()));
+    let (mut first, stop_first) = frontend(Flame {
+        name_prefix: "first-".into(),
+        calls: first_calls.clone(),
+        ..Default::default()
+    })
+    .await;
+    let (mut second, stop_second) = frontend(Flame {
+        name_prefix: "second-".into(),
+        calls: second_calls.clone(),
+        ..Default::default()
+    })
+    .await;
+    first.display_name = "First Flame".into();
+    second.display_name = "Second Flame".into();
+    let directory = tempfile::tempdir().unwrap();
+    let expiry = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
+    for (id, token, state) in [
+        ("first", "Zmlyc3Q=", &mut first),
+        ("second", "c2Vjb25k", &mut second),
+    ] {
+        let token_path = directory.path().join(format!("{id}-token"));
+        let expiry_path = directory.path().join(format!("{id}-expiry"));
+        std::fs::write(&token_path, token).unwrap();
+        std::fs::write(&expiry_path, &expiry).unwrap();
+        state.join_token_file = Some(token_path);
+        state.join_expiry_file = Some(expiry_path);
+    }
+    let expected_catalog = json!({"items":[
+        {"id":"flame-1","endpoint":first.endpoint,"displayName":"First Flame"},
+        {"id":"flame-0","endpoint":second.endpoint,"displayName":"Second Flame"}
+    ]});
+    let app = fleet_router(vec![("flame-1".into(), first), ("flame-0".into(), second)]).unwrap();
+    let (status, catalog) = get(app.clone(), "/api/connections").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalog, expected_catalog);
+    assert!(
+        !catalog
+            .to_string()
+            .contains(directory.path().to_str().unwrap())
+    );
+    assert!(first_calls.lock().unwrap().is_empty());
+    assert!(second_calls.lock().unwrap().is_empty());
+
+    let (_, first_nodes) = get(app.clone(), "/api/nodes").await;
+    assert_eq!(
+        first_nodes["items"][0]["metadata"]["name"],
+        "first-worker-1"
+    );
+    let (_, second_nodes) = get(app.clone(), "/api/connections/flame-0/nodes").await;
+    assert_eq!(
+        second_nodes["items"][0]["metadata"]["name"],
+        "second-worker-1"
+    );
+    let (status, _) = get(app.clone(), "/api/connections/flame-0/sessions/open/tasks").await;
+    assert_eq!(status, StatusCode::OK);
+    let mutation = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/connections/flame-0/sessions/open/actions/close")
+                .header("host", "localhost")
+                .header("origin", "http://localhost")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mutation.status(), StatusCode::OK);
+    assert_eq!(first_calls.lock().unwrap().as_slice(), ["nodes"]);
+    assert_eq!(
+        second_calls.lock().unwrap().as_slice(),
+        ["nodes", "tasks:open", "close:open"]
+    );
+    for (path, token) in [
+        ("/api/join", "Zmlyc3Q="),
+        ("/api/connections/flame-1/join", "Zmlyc3Q="),
+        ("/api/connections/flame-0/join", "c2Vjb25k"),
+    ] {
+        let (status, body) = get(app.clone(), path).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["command"],
+            format!("sudo sh setup.sh --join '{token}'")
+        );
+    }
+    std::fs::write(
+        directory.path().join("second-expiry"),
+        "2020-01-01T00:00:00Z",
+    )
+    .unwrap();
+    assert_eq!(
+        get(app.clone(), "/api/connections/flame-0/join").await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        get(app.clone(), "/api/connections/flame-1/join").await.0,
+        StatusCode::OK
+    );
+    for path in [
+        "/api/connections/disabled/connection",
+        "/api/connections/disabled/nodes",
+        "/api/connections/disabled/join",
+    ] {
+        assert_eq!(get(app.clone(), path).await.0, StatusCode::NOT_FOUND);
+    }
+    for path in ["/api/connections", "/api/connections/flame-0/nodes"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("host", "attacker.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let rejected = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/connections/flame-0/sessions/open/actions/close")
+                .header("host", "localhost")
+                .header("origin", "http://attacker.example")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        second_calls.lock().unwrap().as_slice(),
+        ["nodes", "tasks:open", "close:open"]
+    );
+    let _ = stop_first.send(());
+    let _ = stop_second.send(());
+}
+
+#[tokio::test]
+async fn catalog_router_rejects_empty_duplicate_or_unsafe_ids_and_inconsistent_host_trust() {
+    let state = AppState::connect(ConnectionConfig::new("http://127.0.0.1:9")).unwrap();
+    assert!(fleet_router(vec![]).is_err());
+    for id in ["", "../flame", "flame/{id}", "flame-", "Flame"] {
+        assert!(fleet_router(vec![(id.into(), state.clone())]).is_err());
+    }
+    assert!(
+        fleet_router(vec![
+            ("flame".into(), state.clone()),
+            ("flame".into(), state.clone())
+        ])
+        .is_err()
+    );
+    let mut different_hosts = state.clone();
+    different_hosts.allowed_hosts = vec!["other.example".into()];
+    assert!(
+        fleet_router(vec![
+            ("flame-0".into(), state),
+            ("flame-1".into(), different_hosts)
+        ])
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn managed_join_lookups_are_exact_and_isolated_to_each_flame_namespace() {
+    use k8s_openapi::{ByteString, api::core::v1::Secret};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    let expiry = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
+    let secrets = Arc::new(Mutex::new(BTreeMap::new()));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let first_path = "/api/v1/namespaces/flame-ns-1/secrets/flame-1-join";
+    let second_path = "/api/v1/namespaces/flame-ns-2/secrets/flame-2-join";
+    for (path, token) in [(first_path, "Zmlyc3Q="), (second_path, "c2Vjb25k")] {
+        let secret = Secret {
+            data: Some(BTreeMap::from([
+                ("token".into(), ByteString(token.as_bytes().to_vec())),
+                ("expiresAt".into(), ByteString(expiry.as_bytes().to_vec())),
+                (
+                    "tls.key".into(),
+                    ByteString(b"PRIVATE_KEY_NEVER_RETURNED".to_vec()),
+                ),
+            ])),
+            ..Default::default()
+        };
+        secrets.lock().unwrap().insert(
+            path.to_owned(),
+            (StatusCode::OK, serde_json::to_value(secret).unwrap()),
+        );
+    }
+    let lookup = secrets.clone();
+    let requests = paths.clone();
+    let client = kube::Client::new(
+        tower::service_fn(move |request: Request<kube::client::Body>| {
+            assert_eq!(request.method(), "GET");
+            let path = request.uri().path().to_owned();
+            requests.lock().unwrap().push(path.clone());
+            let (status, body) = lookup
+                .lock()
+                .unwrap()
+                .get(&path)
+                .cloned()
+                .expect("only configured Secret gets are permitted");
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    axum::http::Response::builder()
+                        .status(status)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+            }
+        }),
+        "management",
+    );
+    let mut configs = Vec::new();
+    for number in 1..=2 {
+        let mut config = ConnectionConfig::new(format!("http://flame-{number}:8080"));
+        config.namespace = Some(format!("flame-ns-{number}"));
+        config.name = Some(format!("flame-{number}"));
+        config.display_name = format!("flame-ns-{number}/flame-{number}");
+        config.join_namespace = config.namespace.clone();
+        config.join_secret = Some(format!("flame-{number}-join"));
+        assert!(
+            AppState::connect(config.clone()).is_err(),
+            "managed joins need an explicitly initialized Kubernetes client"
+        );
+        configs.push((
+            format!("flame-{number}"),
+            AppState::connect_with_kubernetes(config, Some(client.clone())).unwrap(),
+        ));
+    }
+    let app = fleet_router(configs).unwrap();
+    let (status, catalog) = get(app.clone(), "/api/connections").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalog["items"][0]["namespace"], "flame-ns-1");
+    assert_eq!(catalog["items"][1]["namespace"], "flame-ns-2");
+    assert!(
+        paths.lock().unwrap().is_empty(),
+        "metadata must not fetch any Secret"
+    );
+    assert!(!catalog.to_string().contains("joinSecret"));
+    assert!(!catalog.to_string().contains("PRIVATE_KEY"));
+    for (uri, token) in [
+        ("/api/join", "Zmlyc3Q="),
+        ("/api/connections/flame-2/join", "c2Vjb25k"),
+    ] {
+        let (status, body) = get(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["command"],
+            format!("sudo sh setup.sh --join '{token}'")
+        );
+        assert!(!body.to_string().contains("PRIVATE_KEY"));
+    }
+    assert_eq!(paths.lock().unwrap().as_slice(), [first_path, second_path]);
+    {
+        let mut sources = secrets.lock().unwrap();
+        let second = sources.get_mut(second_path).unwrap();
+        second.1["data"]["expiresAt"] =
+            serde_json::to_value(ByteString(b"2020-01-01T00:00:00Z".to_vec())).unwrap();
+    }
+    let (status, expired) = get(app.clone(), "/api/connections/flame-2/join").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(expired.get("command").is_none());
+    secrets.lock().unwrap().insert(second_path.into(), (StatusCode::FORBIDDEN,
+        json!({"kind":"Status","apiVersion":"v1","status":"Failure","message":"PRIVATE_API_ERROR","reason":"Forbidden","code":403})));
+    let (status, denied) = get(app.clone(), "/api/connections/flame-2/join").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!denied.to_string().contains("PRIVATE_API_ERROR"));
+    assert!(denied.get("command").is_none());
+    assert_eq!(
+        get(app.clone(), "/api/connections/flame-1/join").await.0,
+        StatusCode::OK
+    );
+    let before = paths.lock().unwrap().len();
+    assert_eq!(
+        get(app, "/api/connections/disabled/join").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(paths.lock().unwrap().len(), before);
+    assert!(
+        paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| path == first_path || path == second_path)
+    );
+}
+
+#[tokio::test]
 async fn lists_one_native_node_page_and_preserves_total_and_order() {
     let (state, stop) = frontend(Flame::default()).await;
     let app = router(state);
@@ -427,7 +737,11 @@ async fn forwards_native_state_filter_and_paging_without_sorting_locally() {
 
 #[tokio::test]
 async fn upstream_failure_is_not_reported_as_a_healthy_empty_list() {
-    let (state, stop) = frontend(Flame { fail_nodes: true }).await;
+    let (state, stop) = frontend(Flame {
+        fail_nodes: true,
+        ..Default::default()
+    })
+    .await;
     let app = router(state);
     let (status, data) = get(app.clone(), "/api/nodes").await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
@@ -731,7 +1045,11 @@ async fn upstream_secrets_are_absent_from_responses_and_logs() {
     // Capture warnings from the HTTP handler and any spawned transport tasks.
     tracing::subscriber::set_global_default(subscriber).unwrap();
     {
-        let (state, stop) = frontend(Flame { fail_nodes: true }).await;
+        let (state, stop) = frontend(Flame {
+            fail_nodes: true,
+            ..Default::default()
+        })
+        .await;
         for path in ["/api/nodes", "/api/sessions/secret-error/tasks"] {
             let (status, body) = get(router(state.clone()), path).await;
             assert_eq!(status, StatusCode::BAD_GATEWAY);

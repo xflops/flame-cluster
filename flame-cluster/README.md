@@ -1,71 +1,95 @@
-# Flame Cluster API
+# Flame Cluster management service
 
-`flame-cluster` serves the REST API used by `flame-ui`. It connects directly to one
-configured Flame Frontend (FLM). It requires no Kubernetes credentials, resource
-access, service discovery, node agent, or logical manager.
+`flame-cluster` serves the REST API used by `flame-ui`. Service and Deployment
+names are `cluster`. It connects directly to configured FLMs, keeping each
+namespace's client, resource pages, actions, and enrollment credentials separate.
+The combined chart always deploys this service; settings live under `cluster`.
+The `flames` list generates indexed namespaced Flame resources and connections.
+
+## Connections
+
+The chart mounts an ordered JSON catalog and sets `FLAME_CONNECTIONS_FILE`:
+
+```json
+[
+  {
+    "id": "flame-1",
+    "namespace": "flame-ns-1",
+    "displayName": "flame-ns-1/flame-1",
+    "endpoint": "https://flame-1-session-manager.flame-ns-1.svc:8080",
+    "caFile": "/etc/flame/connections/flame-1/ca.crt",
+    "joinNamespace": "flame-ns-1",
+    "joinSecret": "flame-1-join"
+  }
+]
+```
+
+IDs must be unique DNS labels; order chooses the default connection. The catalog
+must not be empty. Metadata responses omit credential files and Secret names.
+The UI labels the selector with the namespace and sends every operation to the
+selected connection. The backend does not discover namespaces or FLM resources
+through Kubernetes.
+
+Managed enrollment reads use the mounted ServiceAccount identity with only
+`get` on the configured exact join Secret in each Flame namespace. No Secret
+listing, client private-key access, or writes are granted. TLS CA mounts contain
+public trust from the management namespace. The matching public trust is also
+provided in each Flame namespace for its operator-managed gateway.
+
+For a standalone process, the existing single-endpoint environment mode remains:
 
 ```sh
 FLAME_ENDPOINT=http://flame-session-manager:8080 cargo run -p flame-cluster
 ```
 
-`FLAME_ENDPOINT` is required. `FLAME_NAME` optionally sets the display name (default
-`Flame`), and `CONSOLE_BIND` sets the HTTP listener (default `127.0.0.1:3000`).
-Use `http://` for explicitly chosen cleartext internal gRPC. For `https://`, native
-system CA roots are used unless `FLAME_CA_FILE` supplies a PEM CA bundle.
-`FLAME_CERT_FILE` and `FLAME_KEY_FILE` together supply a PEM client identity for
-mTLS. `FLAME_TLS_DOMAIN` optionally overrides the certificate server name. TLS
-settings are rejected for an HTTP endpoint, and a partial client identity is
-rejected at startup. SREs mount and maintain the credential files.
+Without a catalog, `FLAME_ENDPOINT` is required, `FLAME_NAME` defaults to `Flame`,
+and `CONSOLE_BIND` defaults to `127.0.0.1:3000`. HTTPS uses native roots unless
+`FLAME_CA_FILE` provides public CA trust. `FLAME_CERT_FILE` and `FLAME_KEY_FILE`
+together configure mTLS; `FLAME_TLS_DOMAIN` overrides the server name. Partial
+client identities and TLS settings on an HTTP endpoint are rejected.
 
-`CONSOLE_ALLOWED_HOSTS` is a comma-separated list of exact trusted UI/API
-hostnames or IP addresses, without ports, wildcards, or credentials. It defaults
-to `localhost,127.0.0.1,::1`. Every `/api/` request requires one matching Host
-header; `/healthz` remains available for Kubernetes probes. Configure the exact
-public UI/SSO ingress hostname before exposing the UI, using Helm
-`api.security.allowedHosts` in the combined cluster chart. The UI proxy must preserve Host.
-Session mutations also require any supplied Origin to match the full Host
-including its port. This protects against DNS rebinding; access authentication
-and authorization remain the SRE's responsibility.
+Standalone join files use `FLAME_JOIN_TOKEN_FILE` and `FLAME_JOIN_EXPIRY_FILE`
+together. File catalog entries can use corresponding `joinTokenFile` and
+`joinExpiryFile` fields. File and managed Kubernetes join sources cannot be
+mixed for one connection. Standalone mode requires no Kubernetes credentials.
 
-The API exposes:
+## API
 
-- `GET /api/connection`: endpoint and display name, without credentials.
-- `GET /api/join`: current node join command and expiration, when configured.
-- `GET /api/nodes`, `/api/applications`, `/api/sessions`, `/api/executors`.
-- `GET /api/sessions/{id}/tasks`.
-- `POST /api/sessions/{id}/actions/{suspend|resume|close|delete}` with JSON `{}`.
-- `GET /healthz`: process health, independently of upstream availability.
+- `GET /api/connections`: ordered public connection metadata, including namespace.
+- `GET /api/connections/{id}/connection`: selected endpoint/display metadata.
+- `GET /api/connections/{id}/join`: selected join command and expiration.
+- `GET /api/connections/{id}/{nodes|applications|sessions|executors}`.
+- `GET /api/connections/{id}/sessions/{session}/tasks`.
+- `POST /api/connections/{id}/sessions/{session}/actions/{suspend|resume|close|delete}` with JSON `{}`.
+- `GET /healthz`: process health, independent of FLM availability.
 
-Lists forward one native FLM page and state filter without local sorting or full
-inventory downloads. Responses contain `items`, `page`, `pageSize`, `total`,
-`hasNext`, and `observedAt`. `pageSize` is 1–100 (default 12); obsolete search and
-invalid pagination are rejected. Upstream listing failures return HTTP 502 with a
-generic error; upstream error text is excluded from responses and console logs.
-Missing paging metadata never becomes an empty successful list. Mutation errors
-retain meaningful HTTP status and reject cross-origin requests.
+Existing `/api/connection`, `/api/join`, and resource/action paths remain aliases
+for the first configured connection. Unknown connection IDs return 404. Each
+route is bound to that connection's own FLM client and enrollment source.
 
-Application responses omit credentials, environment variables and task payloads.
-The console does not expose a private-key download or Kubernetes settings API.
-The combined `charts/flame-cluster` chart deploys this API and the FlameCluster
-resource in one release. It uses image `docker.io/xflops/flame-cluster` and
-Service `cluster`. Backend values live under `api`; use
-`api.enabled=false` to omit it, or `cluster.enabled=false` with an explicit
-`api.flame.endpoint` to deploy only the API against an existing FLM.
-`CONSOLE_*` environment variable names remain supported.
+Lists forward one native FLM page/filter, without local sorting or full-inventory
+downloads. Responses include `items`, `page`, `pageSize`, `total`, `hasNext`, and
+`observedAt`. `pageSize` is 1–100, default 12. Invalid filters/pagination are
+rejected; upstream failures return HTTP 502, never a fake healthy empty list.
+Application responses omit credentials, environment variables, and task payloads.
 
-With the cluster enabled, Settings uses the operator's `<cluster>-join` Secret
-automatically. Set `api.join.secretName` to override that Secret in the API
-namespace. The Secret is mounted
-read-only; no Kubernetes client, service account token, or RBAC is added. Outside
-Helm, configure `FLAME_JOIN_TOKEN_FILE` and `FLAME_JOIN_EXPIRY_FILE` together with
-paths to its `token` and `expiresAt` contents. Each `/api/join` request reads the
-current files so operator rotation appears without restarting the console.
-Missing, malformed, or expired credentials return HTTP 503 without a command.
-The join endpoint carries enrollment credentials and, like all API responses,
-uses `Cache-Control: no-store`. The copied command uses a local `setup.sh`; prepare
-that installer on the node before running it.
-SREs must restrict access to the UI/API because session actions use the configured
-FLM identity; this service does not add a separate user authorization system.
+Join responses are generated on demand. Missing, denied, malformed, or expired
+credentials return HTTP 503 without a command. All API responses use
+`Cache-Control: no-store`. The copied command uses local `setup.sh`; prepare that
+installer on the host. Flmlet installs FEM, writes configuration, and starts it.
 
-`cargo test -p flame-cluster` runs a local mock FLM and generates temporary TLS
-credentials using OpenSSL; development and CI test hosts need the `openssl` CLI.
+## Access
+
+`CONSOLE_ALLOWED_HOSTS` is a comma-separated list of exact trusted UI/API hosts,
+without ports or wildcards. It defaults to `localhost,127.0.0.1,::1`; the chart
+uses `cluster.security.allowedHosts`. Setup adds the kubeconfig-derived UI host.
+The UI proxy preserves Host. All API routes enforce this allowlist; session
+mutations also require any supplied Origin to match the full Host and port.
+
+These checks protect against DNS rebinding; they are not user authentication.
+The central management UI/API is administrative access to all configured Flames.
+Expose it through trusted access or an authentication proxy. Per-namespace worker
+and gateway-client credentials remain separate. See [security](../docs/security.md).
+
+`cargo test -p flame-cluster` uses mock FLMs, mock Kubernetes Secret endpoints,
+and temporary OpenSSL certificates to verify connection and credential isolation.

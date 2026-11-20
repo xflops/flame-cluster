@@ -9,7 +9,8 @@ cargo run --locked -p flame-api --bin crdgen -- worker > "${TMPDIR:-/tmp}/flamew
 diff -u charts/flame-operator/crds/flameworkers.yaml "${TMPDIR:-/tmp}/flameworkers.yaml"
 helm lint charts/flame-operator
 helm lint charts/flame-ui
-helm lint charts/flame-cluster --set gateway.hostname=flame.example.test
+python3 charts/flame-cluster/tests/test_render.py
+helm lint charts/flame-cluster --set 'flames[0].gateway.hostname=flame.example.test'
 for script in ci/*.sh; do bash -n "$script"; done
 
 python3 -m py_compile ci/flamepy-app.py

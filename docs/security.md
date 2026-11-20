@@ -47,12 +47,31 @@ tenant authorization. Expose it only through trusted access or an SRE-managed
 authentication proxy. Backend mTLS authenticates the console to FLM, not users
 to the console.
 
-`CONSOLE_ALLOWED_HOSTS` and Helm `api.security.allowedHosts` restrict API Host headers
+`CONSOLE_ALLOWED_HOSTS` and Helm `cluster.security.allowedHosts` restrict API Host headers
 to explicit hostnames or IPs. Loopback names are allowed by default for local
 port forwarding. Add the actual console hostname when configuring an ingress.
 This protects against DNS rebinding; it is not user authentication. Session/task
 metadata can include application-provided messages, commands and URLs and should
 be treated as administrative data.
+
+## Namespace boundaries
+
+Each managed Flame uses its own namespace for its FlameCluster, FlameWorkers,
+certificates, client bundle, and join Secret. Worker Roles reference only the
+named worker/FlameCluster in that namespace. Cross-namespace worker reads and
+client Secret reads are forbidden. Gateway client URI SANs bind namespace, Flame
+name, and UID, preventing a client identity from authenticating to another Flame.
+
+The central management ServiceAccount receives only `get` on each configured
+namespace's exact join Secret. It cannot list Secrets, write them, or read client
+private keys. Connection metadata is an explicit ordered catalog, and the UI
+shows namespace labels; switching namespaces changes the FLM client and join
+source together. Administrative UI/API access still spans all configured Flames;
+namespace scoping is not an end-user login/authorization system.
+
+These resource and credential boundaries do not change the native worker-port
+network boundary described above. SREs must still restrict raw NodePort and
+worker-cache traffic appropriately.
 
 ## Enrollment credentials
 

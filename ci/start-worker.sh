@@ -47,11 +47,11 @@ fi
 # Let the controller publish the host's cache only after its live status is Ready.
 for attempt in {1..60}; do
   if "${kube[@]}" get endpointslices -o json \
-    | jq -e --arg ip "$worker_ip" 'any(.items[]; .metadata.labels["kubernetes.io/service-name"]=="flame-cache-bootstrap" and any(.endpoints[]; .conditions.ready and any(.addresses[]; .==$ip)))' >/dev/null; then break; fi
+    | jq -e --arg ip "$worker_ip" 'any(.items[]; .metadata.labels["kubernetes.io/service-name"]=="flame-1-cache-bootstrap" and any(.endpoints[]; .conditions.ready and any(.addresses[]; .==$ip)))' >/dev/null; then break; fi
   [[ "$attempt" != 60 ]] || exit 1
   sleep 2
 done
 worker_exec install -d -m 0700 /etc/flame-gateway /tmp/flame-client/.flame /tmp/flame-gateway/.flame
-"${kube[@]}" get secret flame-client -o json | jq -er '.data["flame.yaml"]|@base64d' \
+"${kube[@]}" get secret "$flame_name-client" -o json | jq -er '.data["flame.yaml"]|@base64d' \
   | worker_exec_stdin sh -ec 'umask 077; cat > /etc/flame-gateway/flame.yaml; cp /etc/flame-gateway/flame.yaml /tmp/flame-gateway/.flame/flame.yaml'
 worker_exec cp /usr/local/flame/conf/flmlet-client.yaml /tmp/flame-client/.flame/flame.yaml

@@ -7,14 +7,24 @@ const inventory = {
   executors:[{metadata:{id:'executor-01'},spec:{node:'flm-worker-01',application:'flmping',shim:3,resreq:{cpu:2,memory:1024**3}},status:{state:4,session_id:'session-42'}}],
 };
 const stateNames = {nodes:['Unknown','Ready','Not ready'],applications:['Enabled','Disabled'],sessions:['Open','Closed','Suspending','Suspended'],executors:['Unknown','Void','Idle','Binding','Bound','Unbinding','Releasing','Released']};
+const connection = {id:'training',endpoint:'http://flm:8080',displayName:'Training Flame'};
+const scoped = resource => `/api/connections/training/${resource}`;
 async function fixture(page, options={}) {
-  const data=structuredClone(inventory);
+  const connections=options.connections || [connection];
+  const inventories=Object.fromEntries(connections.map(item=>[item.id,structuredClone(options.inventories?.[item.id] || inventory)]));
   await page.route('**/api/**',async route=>{
-    const url=new URL(route.request().url()),resource=url.pathname.split('/').at(-1);
-    if(url.pathname==='/api/connection') return route.fulfill({json:{endpoint:'http://flm:8080',displayName:'Training Flame'}});
-    if(url.pathname==='/api/join') return options.joinFail
+    const url=new URL(route.request().url()),segments=url.pathname.split('/'),resource=segments.at(-1);
+    if(url.pathname==='/api/connections') {
+      if(options.catalogFail) return route.fulfill({status:503,json:{error:'Flame configuration is unavailable.'}});
+      return route.fulfill({json:{items:connections}});
+    }
+    const selected=connections.find(item=>item.id===segments[3]), data=inventories[selected?.id];
+    if(!selected || segments[2]!=='connections') return route.fulfill({status:404,json:{error:'Unknown connection'}});
+    if(options.wait?.[`${selected.id}/${resource}`]) await options.wait[`${selected.id}/${resource}`];
+    if(resource==='connection') return route.fulfill({json:selected});
+    if(resource==='join') return options.joinFail
       ? route.fulfill({status:503,json:{error:'Node join is not configured.'}})
-      : route.fulfill({json:{command:"sudo sh setup.sh --join 'current-token'",expiresAt:new Date(Date.now()+(options.joinExpired ? -60000 : 900000)).toISOString()}});
+      : route.fulfill({json:{command:options.joinCommands?.[selected.id] || "sudo sh setup.sh --join 'current-token'",expiresAt:new Date(Date.now()+(options.joinExpired ? -60000 : 900000)).toISOString()}});
     if(route.request().method()==='POST') {
       if(options.actionFail) return route.fulfill({status:409,json:{error:'Session state changed. Refresh and retry.'}});
       if(resource==='delete') data.sessions=[];
@@ -22,7 +32,7 @@ async function fixture(page, options={}) {
       return route.fulfill({json:{session:data.sessions[0]||null}});
     }
     const currentPage=Number(url.searchParams.get('page')||1),pageSize=Number(url.searchParams.get('pageSize')||12);
-    if(resource==='tasks') return route.fulfill({json:{items:[{metadata:{id:`task-${currentPage}`},status:{state:2,creation_time:1794614400000}}],page:currentPage,pageSize,total:null,hasNext:currentPage===1}});
+    if(resource==='tasks') return route.fulfill({json:{items:[{metadata:{id:options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`},status:{state:2,creation_time:1794614400000}}],page:currentPage,pageSize,total:null,hasNext:currentPage===1}});
     if(options.fail) return route.fulfill({status:502,json:{error:'FLM is unavailable'}});
     if(!Object.hasOwn(data,resource)) return route.fulfill({status:404,json:{error:'Unknown resource'}});
     if(options.delays?.[resource]) await new Promise(resolve=>setTimeout(resolve,options.delays[resource]));
@@ -40,15 +50,15 @@ test('root is the console and reads only its active Flame resource',async({page}
   const clusters = page.getByRole('combobox', {name:'Cluster', exact:true});
   await expect(clusters).toBeEnabled();
   await expect(clusters.locator('option')).toHaveText(['Training Flame']);
-  await expect(clusters).toHaveValue('http://flm:8080');
-  expect(paths.every(p=>['/api/connection','/api/applications'].includes(p))).toBe(true);
+  await expect(clusters).toHaveValue('training');
+  expect(paths.every(p=>['/api/connections',scoped('connection'),scoped('applications')].includes(p))).toBe(true);
   await expect(page.locator('#navigation a')).toHaveText(['Nodes','Executors','Applications','Sessions','Settings']);
   expect((await page.request.get('/dashboard')).status()).toBe(404);
   expect((await page.request.get('/console')).status()).toBe(404);
   await page.getByRole('link',{name:'Nodes',exact:true}).click();
   await expect(page.getByRole('heading',{name:'Nodes',exact:true,level:1})).toBeVisible();
   await expect(clusters.locator('option')).toHaveText(['Training Flame']);
-  await expect(clusters).toHaveValue('http://flm:8080');
+  await expect(clusters).toHaveValue('training');
 });
 test('settings shows the configured cluster without requesting a resource inventory',async({page})=>{
   const paths=[];page.on('request',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))paths.push(new URL(r.url()).pathname)});
@@ -63,7 +73,7 @@ test('settings shows the configured cluster without requesting a resource invent
   await page.getByRole('button',{name:'Copy join command',exact:true}).click();
   await expect(page.locator('#copy-status')).toHaveText('Copied');
   expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe("sudo sh setup.sh --join 'current-token'");
-  expect(paths.sort()).toEqual(['/api/connection','/api/join']);
+  expect(paths.sort()).toEqual(['/api/connections',scoped('connection'),scoped('join')].sort());
   await page.getByRole('link',{name:'Nodes',exact:true}).click();
   await expect(page.getByLabel('Filter by status')).toBeVisible();
   await expect(page.getByRole('button',{name:/flm-worker-01/})).toBeVisible();
@@ -83,7 +93,7 @@ test('resource pagination and filters use upstream pages and reset page one',asy
   await page.getByRole('button',{name:'Next →',exact:true}).click();
   await expect(page.locator('#page-number')).toHaveText('Page 2 of 2');
   await expect(page.getByRole('button',{name:/python-12/})).toBeVisible();
-  const request=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/applications'&&new URL(r.url()).searchParams.get('state')==='Disabled');
+  const request=page.waitForRequest(r=>new URL(r.url()).pathname===scoped('applications')&&new URL(r.url()).searchParams.get('state')==='Disabled');
   await page.getByLabel('Filter by status').selectOption('Disabled');
   expect(new URL((await request).url()).searchParams.get('page')).toBe('1');
   await expect(page.getByRole('button',{name:/flmrun/})).toBeVisible();
@@ -118,7 +128,7 @@ test('session task drawer retains task paging and progress',async({page})=>{
 });
 test('session commands use direct FLM actions and update available commands',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');page.on('dialog',dialog=>dialog.accept());
-  const mutation=page.waitForRequest(r=>r.method()==='POST'&&new URL(r.url()).pathname==='/api/sessions/session-42/actions/close');
+  const mutation=page.waitForRequest(r=>r.method()==='POST'&&new URL(r.url()).pathname===scoped('sessions/session-42/actions/close'));
   await page.getByRole('button',{name:'Close',exact:true}).click();await mutation;
   await expect(page.locator('#content').getByText('Closed',{exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Delete',exact:true})).toBeVisible();
@@ -149,4 +159,164 @@ test('resource navigation remains usable on a narrow screen',async({page})=>{
   await expect(page.getByRole('heading',{name:'Executors',exact:true,level:1})).toBeVisible();
   await expect(page.getByRole('button',{name:'executor-01',exact:true})).toBeVisible();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+
+const production = {id:'production',namespace:'production-ns',endpoint:'https://prod-flm:8080',displayName:'production-ns/production'};
+const productionInventory = {
+  ...inventory,
+  applications:[app('production-service')],
+  nodes:[{...inventory.nodes[0],metadata:{name:'prod-worker'},spec:{...inventory.nodes[0].spec,hostname:'prod-worker'}}],
+  sessions:[{...inventory.sessions[0],metadata:{id:'prod-session'}}],
+};
+const multiple = {connections:[{...connection,namespace:'training-ns'},production],inventories:{production:productionInventory},taskPrefix:true};
+function deferred() {
+  let resolve;
+  const promise=new Promise(done=>{resolve=done});
+  return {promise,resolve};
+}
+async function ignoreTrainingAbort(page) {
+  await page.addInitScript(()=>{
+    const original=window.fetch;
+    window.fetch=(input,options)=>original(input,String(input).includes('/api/connections/training/') ? {...options,signal:undefined} : options);
+  });
+}
+test('configured Flames switch resources and reset pagination, filters, caches, and drawers',async({page})=>{
+  await fixture(page,multiple);await page.goto('/');
+  const selector=page.getByRole('combobox',{name:'Cluster',exact:true});
+  await expect(selector.locator('option')).toHaveText(['training-ns','production-ns']);
+  await expect(selector).toHaveValue('training');
+  await page.getByRole('button',{name:'Next →',exact:true}).click();
+  await expect(page.getByRole('button',{name:/python-12/})).toBeVisible();
+  await selector.selectOption('production');
+  await expect(page.getByRole('button',{name:/production-service/})).toBeVisible();
+  await expect(page.locator('#page-number')).toHaveText('Page 1 of 1');
+  await expect(page.getByRole('button',{name:'Next →',exact:true})).toBeDisabled();
+  await selector.selectOption('training');
+  await expect(page.getByRole('button',{name:/flmping/})).toBeVisible();
+  await expect(page.locator('#page-number')).toHaveText('Page 1 of 2');
+  await page.getByLabel('Filter by status').selectOption('Disabled');
+  await expect(page.getByRole('button',{name:/flmrun/})).toBeVisible();
+  await selector.selectOption('production');
+  await expect(page.getByLabel('Filter by status')).toHaveValue('');
+  await expect(page.getByRole('button',{name:/production-service/})).toBeVisible();
+  await page.getByRole('link',{name:'Sessions',exact:true}).click();
+  await page.getByRole('button',{name:'prod-session',exact:true}).click();
+  await expect(page.getByRole('dialog')).toContainText('production-task-1');
+  await page.getByRole('button',{name:'Next tasks →'}).click();
+  await expect(page.getByRole('dialog')).toContainText('production-task-2');
+  await page.getByRole('button',{name:'Close details'}).click();
+  await selector.selectOption('training');
+  await expect(page).toHaveURL(/#\/sessions$/);
+  await expect(page.getByRole('button',{name:'session-42',exact:true})).toBeVisible();
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await page.getByRole('button',{name:'session-42',exact:true}).click();
+  await expect(page.getByRole('dialog')).toContainText('training-task-1');
+  await expect(page.getByRole('dialog')).not.toContainText('production-task');
+});
+test('Settings clears old join credentials immediately when switching Flames',async({page})=>{
+  const pending=deferred();
+  await fixture(page,{...multiple,joinCommands:{training:'join-training',production:'join-production'},wait:{'production/join':pending.promise}});
+  await page.goto('/#/settings');
+  await expect(page.locator('#join-command')).toHaveText('join-training');
+  const requested=page.waitForRequest(request=>new URL(request.url()).pathname==='/api/connections/production/join');
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');await requested;
+  await expect(page.locator('#join-command')).toHaveCount(0);
+  await expect(page.locator('#content')).not.toContainText('join-training');
+  pending.resolve();
+  await expect(page.locator('#join-command')).toHaveText('join-production');
+  await expect(page.locator('#content')).toContainText('https://prod-flm:8080');
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('training');
+  await expect(page.locator('#join-command')).toHaveText('join-training');
+});
+test('late connection and resource responses cannot overwrite the selected Flame',async({page})=>{
+  const pending=deferred();
+  await ignoreTrainingAbort(page);
+  await fixture(page,{...multiple,wait:{'training/connection':pending.promise,'training/applications':pending.promise}});
+  const initial=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('applications'));
+  await page.goto('/');await initial;
+  const selector=page.getByRole('combobox',{name:'Cluster',exact:true});
+  await expect(selector).toBeEnabled();
+  await selector.selectOption('production');
+  await expect(page.getByRole('button',{name:/production-service/})).toBeVisible();
+  const late=page.waitForResponse(response=>new URL(response.url()).pathname===scoped('applications'));
+  pending.resolve();await (await late).finished();
+  await expect(page.locator('#eyebrow')).toHaveText('PRODUCTION-NS/PRODUCTION');
+  await expect(page.getByRole('button',{name:/production-service/})).toBeVisible();
+  await expect(page.getByRole('button',{name:/flmping/})).toHaveCount(0);
+  await expect(selector).toHaveValue('production');
+});
+test('switching Flames cancels old task drawers and ignores late task responses',async({page})=>{
+  const pending=deferred();
+  await ignoreTrainingAbort(page);
+  await fixture(page,{...multiple,wait:{'training/tasks':pending.promise}});
+  await page.goto('/#/sessions');
+  const requested=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('sessions/session-42/tasks'));
+  await page.getByRole('button',{name:'session-42',exact:true}).click();await requested;
+  await page.evaluate(()=>{const selector=document.querySelector('#connection-name');selector.value='production';selector.dispatchEvent(new Event('change'));});
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await page.getByRole('button',{name:'prod-session',exact:true}).click();
+  await expect(page.getByRole('dialog')).toContainText('production-task-1');
+  const late=page.waitForResponse(response=>new URL(response.url()).pathname===scoped('sessions/session-42/tasks'));
+  pending.resolve();await (await late).finished();
+  await expect(page.getByRole('dialog')).toContainText('production-task-1');
+  await expect(page.getByRole('dialog')).not.toContainText('training-task');
+});
+test('selected Flame scopes session mutations and old mutations cannot refresh another Flame',async({page})=>{
+  const pending=deferred(), posts=[], productionReads=[];
+  await ignoreTrainingAbort(page);
+  page.on('request',request=>{
+    const path=new URL(request.url()).pathname;
+    if(request.method()==='POST')posts.push(path);
+    if(path==='/api/connections/production/sessions')productionReads.push(path);
+  });
+  await fixture(page,{...multiple,wait:{'training/suspend':pending.promise}});
+  await page.goto('/#/sessions');
+  const staleButton=await page.getByRole('button',{name:'Suspend',exact:true}).elementHandle();
+  const requested=page.waitForRequest(request=>request.method()==='POST');
+  await page.getByRole('button',{name:'Suspend',exact:true}).click();await requested;
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+  await expect(page.getByRole('button',{name:'prod-session',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Suspend',exact:true})).toBeEnabled();
+  await staleButton.evaluate(button=>button.click());
+  expect(posts).toEqual([scoped('sessions/session-42/actions/suspend')]);
+  const late=page.waitForResponse(response=>response.request().method()==='POST');
+  pending.resolve();await (await late).finished();
+  expect(productionReads).toHaveLength(1);
+  const mutation=page.waitForRequest(request=>request.method()==='POST'&&new URL(request.url()).pathname==='/api/connections/production/sessions/prod-session/actions/suspend');
+  await page.getByRole('button',{name:'Suspend',exact:true}).click();await mutation;
+  await expect(page.locator('#content').getByText('Suspending',{exact:true})).toBeVisible();
+  expect(posts).toEqual([scoped('sessions/session-42/actions/suspend'),'/api/connections/production/sessions/prod-session/actions/suspend']);
+});
+for(const [label,options,message] of [
+  ['unavailable',{catalogFail:true},'Flame configuration is unavailable.'],
+  ['empty',{connections:[]},'No Flame connections are configured.'],
+]) test(`an ${label} Flame catalog is explicit and can be retried`,async({page})=>{
+  const paths=[];page.on('request',request=>{if(new URL(request.url()).pathname.startsWith('/api/'))paths.push(new URL(request.url()).pathname)});
+  await fixture(page,options);await page.goto('/');
+  await expect(page.getByRole('heading',{name:'Unable to load Flame connections'})).toBeVisible();
+  await expect(page.locator('#notice')).toContainText(message);
+  await expect(page.getByRole('combobox',{name:'Cluster',exact:true})).toBeDisabled();
+  expect(paths).toEqual(['/api/connections']);
+  await page.unroute('**/api/**');await fixture(page);
+  await page.getByRole('button',{name:'Refresh data',exact:true}).click();
+  await expect(page.getByRole('button',{name:/flmping/})).toBeVisible();
+});
+
+test('the first configured Flame is selected in catalog order',async({page})=>{
+  const paths=[];page.on('request',request=>paths.push(new URL(request.url()).pathname));
+  await fixture(page,{...multiple,connections:[production,connection]});await page.goto('/');
+  await expect(page.getByRole('combobox',{name:'Cluster',exact:true})).toHaveValue('production');
+  await expect(page.getByRole('button',{name:/production-service/})).toBeVisible();
+  expect(paths.some(path=>path.startsWith(scoped('')))).toBe(false);
+});
+test('switching the selector aborts an in-flight session mutation',async({page})=>{
+  const pending=deferred();
+  await fixture(page,{...multiple,wait:{'training/suspend':pending.promise}});await page.goto('/#/sessions');
+  const requested=page.waitForRequest(request=>request.method()==='POST');
+  await page.getByRole('button',{name:'Suspend',exact:true}).click();await requested;
+  const aborted=page.waitForEvent('requestfailed',{predicate:request=>request.method()==='POST'&&new URL(request.url()).pathname===scoped('sessions/session-42/actions/suspend')});
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+  await aborted;pending.resolve();
+  await expect(page.getByRole('button',{name:'prod-session',exact:true})).toBeVisible();
+  await expect(page.locator('#notice')).toBeHidden();
 });

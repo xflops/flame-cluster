@@ -1,35 +1,5 @@
-# Both the FlameCluster resource and its API are installed by default.
+# The management service is always installed.
 cluster:
-  enabled: true
-nameOverride: flame
-version: latest
-endpoint: ""
-# Installer-derived kubeconfig IPv4; combined with nodePort unless endpoint is set.
-endpointHost: ""
-kubernetesEndpoint: ""
-rolloutRevision: ""
-image: docker.io/xflops/flame-session-manager:latest
-nodePort: 30080
-storageSize: 20Gi
-storageClass: ""
-existingClaim: ""
-resources:
-  requests: {cpu: "1", memory: 1Gi}
-  limits: {cpu: "4", memory: 8Gi}
-nodeSelector: {}
-cacheEndpoints: []
-gateway:
-  hostname: ""
-  sessionPort: 30443
-  cachePort: 31443
-  className: flame-envoy
-  envoyNamespace: envoy-gateway-system
-  issuerName: flame-client-ca
-  clientAuth: true
-
-# API settings are separate from session-manager resource settings above.
-api:
-  enabled: true
   fullnameOverride: ""
   image:
     repository: docker.io/xflops/flame-cluster
@@ -52,19 +22,16 @@ api:
   service:
     type: ClusterIP
     port: 3000
-  # Operator-issued <cluster>-join Secret in this namespace. Optional for external FLM.
-  # Defaults to <nameOverride>-join when cluster.enabled; otherwise no join mount.
-  # The API reads its rotating token and expiresAt keys only from this mount.
+  # Used only for an external endpoint with flames: [].
   join:
     secretName: ""
-  # Empty endpoint/name derive from nameOverride and the release namespace.
-  # For a standalone API, set cluster.enabled=false and flame.endpoint explicitly.
+  # External endpoint configuration when flames is empty.
+  # With one managed flame, endpoint optionally overrides its direct FLM address.
   flame:
     endpoint: ""
     name: ""
     tls:
       # SRE public trust ConfigMap in this namespace, containing caKey.
-      # Defaults to gateway.issuerName when cluster.enabled; otherwise unset.
       # Takes precedence over CA trust from secretName.
       caConfigMap: ""
       # Optional SRE client identity Secret; no credentials are generated here.
@@ -74,3 +41,34 @@ api:
       certKey: ""
       keyKey: ""
       domain: ""
+
+# Each resource is <name>-<index+1> in its own <name>-ns-<index+1> namespace.
+# Namespaces are retained on uninstall; clients and workers stay in their Flame namespace.
+# Additional partial entries inherit the same resource defaults.
+flames:
+  - name: flame
+    namespace: "" # Empty selects flame-ns-1 for the first entry.
+    version: latest
+    endpoint: ""
+    # Installer-derived kubeconfig IPv4; combined with nodePort unless endpoint is set.
+    endpointHost: ""
+    kubernetesEndpoint: ""
+    rolloutRevision: ""
+    image: docker.io/xflops/flame-session-manager:latest
+    nodePort: null # Defaults to 30080 + index * 10.
+    storageSize: 20Gi
+    storageClass: ""
+    existingClaim: ""
+    resources:
+      requests: {cpu: "1", memory: 1Gi}
+      limits: {cpu: "4", memory: 8Gi}
+    nodeSelector: {}
+    cacheEndpoints: []
+    gateway:
+      hostname: ""
+      sessionPort: null # Defaults to 30443 + index * 10.
+      cachePort: null # Defaults to 31443 + index * 10.
+      className: flame-envoy
+      envoyNamespace: envoy-gateway-system
+      issuerName: flame-client-ca
+      clientAuth: true

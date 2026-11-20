@@ -8,13 +8,45 @@ const paths = {
   executors: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><path d="m10 10 4 2-4 2z"/>',
 };
 const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
-const state = { view: parseRoute(location.hash), connection: null, join: null, pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
-let pollController, taskController, revision = 0;
+const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
+let catalogController, pollController, taskController, actionController, revision = 0;
 const pageSize = 12;
-const apiBase = () => '/api';
+const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
 function resourceUrl() {
-  return `/api/${state.view}?${new URLSearchParams({ page: state.page + 1, pageSize, state: state.filter })}`;
+  return `${apiBase()}/${state.view}?${new URLSearchParams({ page: state.page + 1, pageSize, state: state.filter })}`;
+}
+async function loadConnections() {
+  if (catalogController) return;
+  const controller = new AbortController();
+  catalogController = controller;
+  state.loading = true; render();
+  let connections;
+  try {
+    const data = await json('/api/connections', AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]));
+    if (!Array.isArray(data.items) || data.items.some(item => !item || typeof item.id !== 'string' || !item.id)
+      || new Set(data.items.map(item => item.id)).size !== data.items.length) throw new Error('Invalid Flame connection configuration.');
+    if (!data.items.length) throw new Error('No Flame connections are configured.');
+    connections = data.items;
+    delete state.errors.connections;
+  } catch (error) {
+    state.errors.connections = error.name === 'TimeoutError' ? 'Loading Flame connections timed out. Refresh to retry.' : error.message;
+  } finally {
+    catalogController = null;
+    state.loading = false;
+  }
+  if (connections) {
+    state.connections = connections;
+    selectConnection(connections[0].id);
+  } else render();
+}
+function selectConnection(id) {
+  if (id === state.connectionId || !state.connections?.some(connection => connection.id === id)) return;
+  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort();
+  pageCache.clear();
+  Object.assign(state, {connectionId: id, connection: null, join: null, pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
+  $('#details').close(); $('#detail-content').replaceChildren();
+  render(); refresh();
 }
 function restorePage() {
   const cached = pageCache.get(resourceUrl());
@@ -54,15 +86,18 @@ function sessionActions(row, index) {
   const allowed = {0:['suspend','close'],1:['delete'],3:['resume']}[row.status?.state] || [];
   return `<div class="session-actions"><button class="button small subtle" data-row="${index}">View</button>${allowed.map(action => `<button class="button small" data-action="${action}" data-index="${index}" ${state.action ? 'disabled' : ''}>${sessionCommands[action]}</button>`).join('')}</div>`;
 }
-async function actOnSession(row, action) {
-  if (state.action) return;
+async function actOnSession(row, action, connectionId) {
+  if (state.action || !connectionId || connectionId !== state.connectionId) return;
+  const previousRevision = revision;
   const id = idOf(row);
   if (['close','delete'].includes(action) && !confirm(`${sessionCommands[action]} session “${id}”?${action === 'delete' ? ' Its task history will be removed.' : ' It will no longer accept tasks.'}`)) return;
+  if (revision !== previousRevision || state.connectionId !== connectionId || state.action) return;
   revision++; pollController?.abort(); state.loading = false;
   const generation = revision;
+  const controller = new AbortController(); actionController = controller;
   state.action = action; delete state.errors.action; render();
   try {
-    const response = await fetch(`${apiBase()}/sessions/${encodeURIComponent(id)}/actions/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(15000)});
+    const response = await fetch(`/api/connections/${encodeURIComponent(connectionId)}/sessions/${encodeURIComponent(id)}/actions/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(15000)])});
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || 'Unable to change session. Refresh and retry.');
     if (generation === revision) {pageCache.clear(); state.pages = {};}
@@ -85,9 +120,13 @@ function renderNavigation() {
 function render() {
   renderNavigation();
   const view = views[state.view];
-  $('#connection-name').innerHTML = `<option value="${e(state.connection?.endpoint || '')}">${e(state.connection?.displayName || 'Flame')}</option>`;
-  $('#connection-name').disabled = !state.connection;
-  $('#connection-name').title = state.connection?.endpoint || '';
+  const selected = state.connections?.find(connection => connection.id === state.connectionId);
+  $('#connection-name').innerHTML = state.connections?.length
+    ? state.connections.map(connection => `<option value="${e(connection.id)}">${e(connection.namespace || connection.displayName || connection.id)}</option>`).join('')
+    : '<option>Loading Flames…</option>';
+  if (state.connectionId) $('#connection-name').value = state.connectionId;
+  $('#connection-name').disabled = !state.connections?.length;
+  $('#connection-name').title = selected?.endpoint || '';
   $('#page-title').textContent = view.title;
   $('#page-description').textContent = view.description;
   $('#breadcrumb-detail').textContent = view.title;
@@ -96,7 +135,7 @@ function render() {
   $('#row-count').hidden = settings;
   $('.filters').hidden = settings;
   $('.table-footer').hidden = settings;
-  $('#eyebrow').textContent = (state.connection?.displayName || 'Flame').toUpperCase();
+  $('#eyebrow').textContent = (state.connection?.displayName || selected?.displayName || 'Flame').toUpperCase();
   const filter = $('#status-filter');
   filter.innerHTML = '<option value="">All states</option>' + view.states.map(s => `<option>${e(s)}</option>`).join('');
   filter.value = state.filter;
@@ -110,6 +149,11 @@ function render() {
   const dot = $('#connection-dot');
   dot.className = `live-dot ${errors.length ? 'bad' : state.lastUpdate ? 'good' : ''}`;
   dot.title = errors.length ? 'Some data is unavailable' : state.lastUpdate ? 'Connected' : 'Connecting';
+  if (!state.connectionId) {
+    $('#content').innerHTML = empty(state.errors.connections ? 'Unable to load Flame connections' : 'Loading Flames', state.errors.connections || 'Reading configured Flame connections…');
+    $('#previous').disabled = true; $('#next').disabled = true;
+    return;
+  }
   if (settings) {
     $('#content').innerHTML = state.connection
       ? table(['Setting', 'Value'], [
@@ -118,10 +162,11 @@ function render() {
       ])
       : empty(errors.length ? 'Unable to load settings' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Connection settings will appear here shortly.');
     const join = state.join && Date.parse(state.join.expiresAt) > Date.now() ? state.join : null;
-    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on a prepared worker host with the Flame runtime and setup.sh installed.</p>${join
+    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host with setup.sh installed. Flmlet installs and configures its Flame runtime.</p>${join
       ? `<pre><code id="join-command">${e(join.command)}</code></pre><p>Expires ${e(new Date(join.expiresAt).toLocaleString())}. Refresh to get the latest command.</p><button class="button" id="copy-join">Copy join command</button><span id="copy-status" role="status"></span>`
       : `<p>${e(state.errors.join || (state.loading ? 'Loading join command…' : 'Join command unavailable. Refresh to retry.'))}</p>`}</section>`);
     $('#copy-join')?.addEventListener('click', async () => {
+      if (state.join !== join || state.view !== 'settings') return;
       const status = $('#copy-status');
       if (Date.parse(join.expiresAt) <= Date.now()) { status.textContent = 'Command expired. Refresh to get a new command.'; return; }
       try { await navigator.clipboard.writeText(join.command); status.textContent = 'Copied'; }
@@ -155,7 +200,8 @@ function render() {
   } else {
     $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));
   }
-  document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => actOnSession(displayed[Number(button.dataset.index)], button.dataset.action)));
+  const displayedConnectionId = state.connectionId;
+  document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => actOnSession(displayed[Number(button.dataset.index)], button.dataset.action, displayedConnectionId)));
   document.querySelectorAll('[data-row]').forEach(button => button.addEventListener('click', () => openDetails(displayed[Number(button.dataset.row)])));
 }
 async function json(url, signal) {
@@ -166,6 +212,7 @@ async function json(url, signal) {
 }
 async function refresh() {
   if (state.loading || state.action) return;
+  if (!state.connectionId) { await loadConnections(); return; }
   const generation = revision, controller = new AbortController();
   pollController = controller;
   const timer = setTimeout(() => controller.abort(), 22000);
@@ -190,8 +237,8 @@ async function refresh() {
   }
   const view = state.view;
   await Promise.allSettled([
-    load('connection', '/api/connection', data => { state.connection = data; }),
-    ...(view === 'settings' ? [load('join', '/api/join', data => { state.join = data; })] : [load(view, resourceUrl(), data => { state.pages[view] = data; })]),
+    load('connection', `${apiBase()}/connection`, data => { state.connection = data; }),
+    ...(view === 'settings' ? [load('join', `${apiBase()}/join`, data => { state.join = data; })] : [load(view, resourceUrl(), data => { state.pages[view] = data; })]),
   ]);
   clearTimeout(timer);
   if (generation !== revision) return;
@@ -259,7 +306,7 @@ async function loadTasks(row, page = 1) {
   } finally { clearTimeout(timer); }
 }
 function route() {
-  revision++; pollController?.abort(); taskController?.abort();
+  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort();
   state.view = parseRoute(location.hash);
   if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
   Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null});
@@ -268,6 +315,7 @@ function route() {
   render(); refresh();
 }
 $('#status-filter').addEventListener('change', event => { state.filter = event.target.value; state.page = 0; queryChanged(); });
+$('#connection-name').addEventListener('change', event => selectConnection(event.target.value));
 $('#refresh').addEventListener('click', refresh);
 $('#auto-refresh').addEventListener('click', () => { state.auto = !state.auto; render(); });
 $('#previous').addEventListener('click', () => { state.page--; queryChanged(); });

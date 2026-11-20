@@ -13,6 +13,10 @@ The default GatewayClass is `flame-envoy`, issuer is `flame-client-ca`, and Envo
 controller namespace is `envoy-gateway-system`; set the gateway fields to match
 the installation.
 
+The combined cluster chart generates one-based indexed resources, such as
+`flame-ns-1/flame-1`, from its `flames` list. Each Flame has its own namespace;
+its client bundle, workers, join Secret, and enrollment Roles stay there.
+
 For each cluster, the operator manages one session-manager Deployment, a
 retained PVC, configuration, a NodePort Service, external cache Services and
 EndpointSlices, cert-manager Certificates, EnvoyProxy, Gateway, HTTPRoutes, and
@@ -63,8 +67,8 @@ An optional `spec.endpoint: ip:port` selects an RFC 1918 LAN address and NodePor
 and publishes frontend/backend endpoints in status. SREs choose which routable
 Kubernetes node workers connect to; the operator does not discover or manage nodes.
 The default `sh setup.sh` flow derives this address and `spec.kubernetesEndpoint`
-from the active kubeconfig, without requiring a values file. The Helm chart's
-`endpointHost` combines that IPv4 address with `nodePort` unless `endpoint` is
+from the active kubeconfig, without requiring a values file. Each chart
+`flames[]` entry combines `endpointHost` with `nodePort` unless `endpoint` is
 explicitly supplied.
 
 `gateway.hostname` accepts a DNS hostname or IPv4 address; rendering and

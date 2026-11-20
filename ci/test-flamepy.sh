@@ -5,8 +5,7 @@ umask 077
 runtime="${1:?test result directory required}"
 mkdir -p "$runtime"
 runtime="$(cd "$runtime" && pwd)"
-kube=(kubectl -n flame-system)
-worker=flame-ci-worker
+source "$(dirname "$0")/worker-helpers.sh"
 hosts_marker="flame-app-ci-$$"
 hosts_added=false
 cleanup() {
@@ -36,7 +35,7 @@ wheels=("$runtime/flamepy-wheels"/flamepy*.whl)
 python3.12 -m venv "$runtime/flamepy-venv"
 "$runtime/flamepy-venv/bin/python" -m pip install "${wheels[0]}" > "$runtime/flamepy-sdk-install.log" 2>&1
 # The private identity stays outside every directory packaged by flamepy.app.
-"${kube[@]}" get secret flame-client -o json \
+"${kube[@]}" get secret "$flame_name-client" -o json \
   | jq -er '.data["flame.yaml"] | @base64d' > "$runtime/flamepy-home/.flame/flame.yaml"
 node_ip="$(kubectl get nodes -o json | jq -r '[.items[0].status.addresses[] | select(.type=="InternalIP") | .address][0]')"
 [[ -n "$node_ip" && "$node_ip" != null ]]

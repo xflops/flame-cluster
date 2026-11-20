@@ -1,255 +1,204 @@
-# Helm deployment and SRE responsibilities
+# Deployment and namespace isolation
 
-See [security boundaries](security.md) for raw worker-port exposure, CRI/Host
-runtime trust, administrative console access and enrollment credentials.
-
-The charts install only Flame-owned workloads and resources. They do not install
-Kubernetes, workers, CRI/CNI, databases, registry infrastructure, cert-manager,
-Envoy Gateway, Gateway API CRDs, a GatewayClass, an issuer, or a trust-distribution
-controller.
+The charts install Flame-owned resources on existing SRE-managed infrastructure.
+They do not install Kubernetes, cert-manager, Envoy Gateway, databases, registries,
+CRI/CNI, or the issuer/trust-distribution controllers. See [security](security.md)
+for the boundaries of worker transport and workload execution.
 
 ## Prerequisites
 
-SREs provide:
+SREs provide Kubernetes storage, cert-manager, Envoy Gateway with its extension
+CRDs and Gateway API `BackendTLSPolicy` v1, a GatewayClass (`flame-envoy` by
+default), and a ready ClusterIssuer (`flame-client-ca`). The management namespace
+must contain a ConfigMap named for every configured issuer, with its public
+CA PEM in `data["ca.crt"]`. Private CA keys remain with the issuer.
 
-- Kubernetes with persistent storage for the session manager.
-- cert-manager and a usable ClusterIssuer (default `flame-client-ca`).
-- Envoy Gateway, its extension CRDs, standard Gateway API CRDs and a GatewayClass
-  using `gateway.envoyproxy.io/gatewayclass-controller` (default `flame-envoy`).
-  Gateway API must serve `BackendTLSPolicy` at `gateway.networking.k8s.io/v1`.
-- A ConfigMap in each FlameCluster namespace named for the configured issuer,
-  with the trusted CA PEM under `ca.crt`, for gateway client authentication.
-- Routable Kubernetes node addresses, DNS when using a gateway DNS hostname,
-  and firewall access to the configured NodePorts.
-- Linux/systemd worker hosts, prepared CRI/networking, and any external cache endpoints.
+Worker hosts need Linux/systemd, Python 3, and prepared workload runtimes,
+networking, and storage. Flmlet installs FEM itself, then configures and starts
+it. SREs provide and secure CRI/CNI when using the default CRI shim.
 
-The operator requires access to its Flame resources and objects it owns. Its Helm
-chart installs the FlameCluster/FlameWorker CRDs and controller RBAC. The
-controller creates worker-scoped service accounts and Roles for enrollment;
-it does not install infrastructure or dependency controllers.
+## Install
 
-## Charts
-
-| Chart | Important values |
-| --- | --- |
-| `charts/flame-operator` | `image.repository`, `image.tag`, `serviceAccount`, `rbac.create` |
-| `charts/flame-cluster` | `nameOverride`, `version`, `image`, `endpointHost`, `endpoint`, `kubernetesEndpoint`, `nodePort`, `gateway`, `storageClass`, `cacheEndpoints`, `cluster.enabled`, `api` |
-| `charts/flame-ui` | `consoleUpstream`, `image`, `service` |
-
-The `flame-cluster` chart includes the FlameCluster resource and REST API in one
-release. The API uses image `docker.io/xflops/flame-cluster` and Service
-`cluster`; configure it under `api`, including `api.image`,
-`api.security.allowedHosts`, `api.flame`, and `api.join`. Its default connection,
-CA trust, and join Secret follow the configured cluster name, namespace, and
-issuer. Set `api.enabled=false` for a resource-only installation, or
-`cluster.enabled=false` and `api.flame.endpoint` for an API-only installation
-against an existing FLM.
-
-Set `api.fullnameOverride` to change the API Service name, and update
-`flame-ui.consoleUpstream` accordingly. The UI chart's default upstream is
-`cluster:3000`.
-Use SRE-managed ingress/gateway resources to expose the UI; it serves the console
-at `/`, opening the configured cluster's Applications page directly. The cluster
-selector contains only the configured cluster, with no aggregate option.
-Navigation is Nodes → Executors → Applications → Sessions → Settings, using
-Compact density throughout. Settings shows connection details and the current
-node join command with a copy button and expiration.
-
-`FlameCluster.spec.version` selects the default session-manager image tag.
-An explicit custom image tag/digest is used unchanged. No controller polls
-registries to follow moving tags. Change `rolloutRevision` to explicitly restart
-the session manager through a Helm upgrade. `cacheEndpoints` is an optional list of
-`{name,address,cachePort,ready}` for externally managed IPv4 object caches.
-The operator merges these with same-cluster FlameWorker cache addresses whose
-status is current and healthy. Cluster readiness covers the control plane;
-each worker reports its own readiness separately.
-
-## Direct Tailscale access
-
-Setup exposes the UI directly on the kubeconfig server's IPv4,
-stripping the HTTPS scheme and Kubernetes API port. It sets
-`service.externalIPs` and the API host allowlist from that endpoint, without a
-separate UI address flag. Use a kubeconfig whose server is the node-owned address
-you want to advertise, including a Tailscale address when appropriate. A
-loopback-only tunnel endpoint is not suitable for remote UI/worker access.
-
-For a manual Helm installation with manager address `100.117.27.41`:
-
-```sh
-helm upgrade flame-cluster charts/flame-cluster --namespace flame-system \
-  --reuse-values \
-  --set-json 'api.security.allowedHosts=["localhost","127.0.0.1","::1","100.117.27.41"]'
-helm upgrade flame-ui charts/flame-ui --namespace flame-system --reuse-values \
-  --set 'service.externalIPs[0]=100.117.27.41'
-```
-
-Open `http://100.117.27.41/` from a device on the tailnet. The UI Service listens
-on port 80 through Kubernetes Service routing; the address must belong to the
-node and be reachable through Tailscale. No SSH tunnel or local listener is
-required. Restrict access with your tailnet policy or authentication proxy.
-This also works when k3s limits NodePort addresses to its primary LAN IP.
-
-## Gateway NodePorts
-
-The Envoy data-plane Service uses `NodePort` with `externalTrafficPolicy: Cluster`.
-`gateway.sessionPort` defaults to `30443` and `gateway.cachePort` to `31443`;
-each value is used for its Gateway listener, Service port and NodePort. Clients
-can reach those ports on any routable Kubernetes node, including nodes without
-an Envoy pod. The configured `nodeSelector` still controls Envoy pod placement.
-No host networking, host ports, or binding to a particular node IP is required.
-
-`sh setup.sh` uses the active kubeconfig server host for both gateway NodePorts
-and its full HTTPS URL for worker enrollment. It needs no hostname flags or
-values file. Session traffic defaults to port `30443`, cache traffic to `31443`,
-and the native worker frontend/backend to `30080`/`30081`. `--kubeconfig FILE`
-selects another kubeconfig; otherwise kubectl's current context is used.
-The installer requires Helm, kubectl, and Python 3, along with the SRE
-prerequisites above. A minimal installation is:
+Use a kubeconfig whose server address is reachable from clients and workers:
 
 ```sh
 curl -fsSLo setup.sh https://xflops.io/cluster/setup.sh
 sh setup.sh
 ```
 
-For manual Helm installations, `endpointHost` combines a worker-reachable IPv4
-address with the chart's `nodePort`; an explicit `endpoint` takes precedence.
-Set `kubernetesEndpoint` to enable enrollment. Helm alone does not read kubeconfig
-to populate these values.
+`--values FILE` is optional. `--kubeconfig FILE` selects a different kubeconfig;
+otherwise kubectl's current context is used. The installer derives the UI external
+IPv4, gateway host, enrollment API address, and worker frontend address from that
+server endpoint. It removes the HTTPS scheme and API port for the UI address.
+There is no separate UI address option or port-forward requirement.
 
-An IPv4 gateway uses an IP certificate SAN and routes without DNS hostname
-constraints. A DNS gateway uses its hostname for TLS/SNI; the operator does not
-resolve it during rendering or reconciliation. Allow traffic to the NodePorts.
-`--hostname`, `--endpoint`, and `--kubernetes-endpoint` remain optional overrides.
-Use `--values FILE` only when overriding the default chart configuration.
-`gateway.ingressIp` is optional advertised-address metadata only. It does not
-select an Envoy node or bind an address, and can be omitted when SRE DNS provides
-the mapping.
+The current native worker protocol requires an RFC 1918 frontend IPv4. If the
+kubeconfig uses Tailscale or an API-only load balancer, use `--endpoint` for the
+worker-reachable LAN frontend and, when necessary, `--kubernetes-endpoint` for
+enrollment. These overrides do not change the UI's kubeconfig-derived address.
+The API certificate must validate against Kubernetes CA trust.
 
-Every NodePort must be unique across the Kubernetes cluster and must lie in its
-configured NodePort range. Reserve the session-manager frontend/backend pair
-(`nodePort`, default `30080`, and `nodePort + 1`, default `30081`) as well as both
-Envoy ports. Assign different values to additional FlameClusters and avoid
-collisions with other Kubernetes Services:
+The installer preflights every chart and configured GatewayClass/issuer. It
+creates the managed Flame namespaces and copies only the issuers' public CA
+ConfigMap data into them before installing workloads. No client private keys or
+join Secrets are copied across namespaces. Readiness is checked for each Flame.
+
+## Chart configuration
+
+| Chart | Responsibility |
+| --- | --- |
+| `charts/flame-operator` | Namespaced Flame resources, certificates, gateways, and worker enrollment. |
+| `charts/flame-cluster` | The always-enabled management service and an ordered list of Flame configurations. |
+| `charts/flame-ui` | The UI and same-origin API proxy. |
+
+The management Service and Deployment are named `cluster`; its binary and image
+are `flame-cluster` and `docker.io/xflops/flame-cluster`. Backend settings live
+under `cluster`. The previous `api` group and backend enable/disable switch are
+removed. Flame configurations live in the `flames` list:
 
 ```yaml
-nodePort: 30080
-gateway:
-  hostname: flame.example.com
-  sessionPort: 30443
-  cachePort: 31443
+cluster:
+  image:
+    repository: docker.io/xflops/flame-cluster
+    tag: latest
+  security:
+    allowedHosts: [localhost, 127.0.0.1, "::1", "100.117.27.41"]
+flames:
+  - name: flame
+    namespace: flame-ns-1
+    gateway:
+      hostname: 192.168.3.149
+  - name: flame
+    namespace: flame-ns-2
 ```
 
-## Host workers
+Names receive a one-based index: this example creates `flame-ns-1/flame-1` and
+`flame-ns-2/flame-2`. Omitting namespace derives `<name>-ns-<index>`; duplicate
+namespaces are rejected. Partial entries inherit resource defaults. Additional
+entries inherit omitted gateway host, frontend host, and Kubernetes endpoint
+from the first entry; explicit per-entry values are retained.
 
-The session manager serves native TLS on both its frontend and backend. The
-operator issues a server certificate for its Service DNS names and declared
-worker endpoint IPs. Envoy verifies the upstream through BackendTLSPolicy;
-workers verify the advertised IP against validated public CA trust from
-`FlameCluster.status.controlPlaneCa`. The API mounts the issuer's public CA ConfigMap and the optional join Secret. Server private keys stay in the control-plane Secret.
-Certificate renewal restarts the session manager with the new identity.
-Native client-certificate authentication is future Flame work; network isolation
-and access controls remain necessary.
+Each entry supports `version`, `image`, `endpoint`, `endpointHost`,
+`kubernetesEndpoint`, `rolloutRevision`, `nodePort`, `storageSize`, `storageClass`,
+`existingClaim`, `resources`, `nodeSelector`, `cacheEndpoints`, and `gateway`.
+`endpointHost` combines a frontend IPv4 with `nodePort`; explicit `endpoint`
+takes precedence. `cacheEndpoints` lists SRE-managed `{name,address,cachePort,ready}`
+locations in addition to healthy, current same-Flame worker caches.
 
-SREs prepare Linux/systemd hosts and the selected workload runtime/networking.
-Flmlet installs FEM through upstream `flame/setup.sh --join --no-systemd`, then
-writes cluster configuration and starts FEM. Setup
-resolves the kubeconfig server host to an IPv4 address for the native worker
-frontend and combines it with `nodePort` from the default or optional values file.
-The current worker protocol requires an RFC 1918 address. If the kubeconfig
-address is an API-only load balancer, use the optional endpoint overrides for
-worker-reachable node addresses. The Kubernetes API certificate must validate
-against the cluster CA; TLS verification stays enabled.
+For an external FLM, set `flames: []` and provide `cluster.flame.endpoint` and
+its TLS settings. The management service still runs. Optional standalone join
+files come from `cluster.join.secretName`; this mode does not need Kubernetes
+Secret access.
 
-The generated `<cluster>-client` Secret contains a standalone `flame.yaml` with
-an embedded TLS client certificate and private key for session/cache gateway
-access. Its requested lifetime is one year (`8760h`), with renewal 30 days
-(`720h`) before expiry. The issuer must allow that lifetime. Mounted bundles
-follow renewal; refresh exported copies separately before expiration. This
-client credential is separate from the short-lived node join token below.
+## Per-namespace resources and credentials
 
-The operator issues a cluster join token immediately and renews it every 15
-minutes. It exists before any FlameWorker does. Open **Settings → Join a node**
-in the UI, copy the command, and run it on the prepared host with `setup.sh`
-available. Settings shows the token expiration; refresh to obtain the latest
-command before joining. The cluster installer configures this automatically.
-Worker enrollment creates the FlameWorker resource; no worker Helm chart or
-separate worker release is required.
+Each Flame namespace contains its FlameCluster, enrolled FlameWorkers, server
+and client certificates, generated client bundle, join Secret, workload Services,
+and enrollment RBAC. A default first worker joins `flame-ns-1/flame-1` using the
+namespace encoded in its selected join token. Its Kubernetes identity can read
+only its named worker and FlameCluster and patch its own status in that namespace.
+It cannot read client Secrets or objects in another namespace.
 
-The installer registers the host through the operator, creates its FlameWorker,
-and generates `conf/flmlet/flame-cluster.yaml` for FEM. Hostname and LAN address
-are detected automatically; `--worker` and `--address` override them. Use
-`--manage-object-cache` when flmlet should also manage the installed object cache.
-`--join --token-file FILE` is an alternate way to supply the token.
+Client URI SANs bind namespace, Flame name, and object UID. A client certificate
+for one Flame cannot authenticate to another Flame's gateway, even when both
+use the same issuer. The `<flame-name>-client` Secret contains standalone
+`flame.yaml` plus CA, certificate, and private-key files. The requested client
+certificate lifetime is one year (`8760h`), renewing 30 days (`720h`) before
+expiry. The issuer must allow that lifetime. Mounted bundles follow renewal;
+exported copies need a separate refresh before expiry.
 
-Bootstrap requests use the existing Kubernetes HTTPS API and its Service proxy
-to reach the operator. The bootstrap credential grants enrollment access only.
-The operator exchanges it for a separate, persistent worker credential that
-can read that worker and its referenced cluster and patch only its own status.
-Renewing the join token does not interrupt joined workers. Rejoining the same
-host uses its private enrollment key, so a join token alone cannot claim an
-existing worker. Deleting or disabling a worker revokes its credential.
-Explicit authorization rejection stops its owned services; temporary network
-failures retain the last applied configuration.
+The management API gets only `get` on each configured namespace's exact
+`<flame-name>-join` Secret. It cannot list Secrets, modify them, or read client
+private-key Secrets. Its ordered connection catalog is explicit configuration,
+not namespace or workload discovery. The central management UI/API is trusted
+administrative access across the configured Flames; it does not authenticate
+end users or implement tenant authorization.
 
-An omitted `kubernetesEndpoint` skips enrollment without changing control-plane
-readiness. Settings shows the join command once the operator has issued the
-join Secret.
+## UI and direct access
 
-`flmlet` writes dedicated configuration and manages only its own FEM and optional
-object-cache units. Foreign services require an explicit adoption flag.
-`manageObjectCache` defaults to false. A selected release mismatch triggers
-an installation of the selected version before configuration is applied and
-services are started. The `latest` selection does not poll for newer builds.
-Changing worker `rolloutRevision` restarts
-the services; unchanged configuration does not restart healthy processes.
+Open `http://<kubeconfig-server-ip>/`. The selector shows namespaces only, such
+as `flame-ns-1` and `flame-ns-2`. `/` opens the first configured Flame directly.
+Selecting another namespace switches resources, session actions, and join
+credentials together. There is no aggregate page or All clusters option.
 
-## Direct console TLS
+Compact density is the default. Navigation is Nodes → Executors → Applications
+→ Sessions → Settings. Settings shows the selected connection and its current
+join command and expiration. Copy that command to the selected namespace's
+prepared worker host with `setup.sh` available; no kubectl token lookup is needed.
 
-The console supports HTTP for trusted in-cluster FLM connections and HTTPS/mTLS
-for protected endpoints. Credentials come from an existing SRE-managed Secret;
-the chart does not create credentials.
+The UI proxies to `cluster.<management-namespace>.svc:3000`. The backend talks
+to each FLM through its in-cluster session-manager Service, not through Tailscale
+or a NodePort. Tailscale may carry browser and administrative access to k3s.
 
-```sh
-helm upgrade --install flame-cluster charts/flame-cluster --namespace flame-system \
-  --set cluster.enabled=false \
-  --set api.flame.endpoint=https://flame.example.com:30443 \
-  --set api.join.secretName=flame-join \
-  --set api.flame.tls.secretName=flame-cluster-client \
-  --set api.flame.tls.caKey=ca.crt \
-  --set api.flame.tls.certKey=tls.crt --set api.flame.tls.keyKey=tls.key
-```
+Setup configures the UI Service's `service.externalIPs` and
+`cluster.security.allowedHosts` from the kubeconfig endpoint together. For manual
+Helm deployment, configure those fields with the node-owned address you intend
+to expose. Add any UI/SSO hostname to the host allowlist and restrict access
+through trusted tailnet policy or an authentication proxy. Change
+`cluster.fullnameOverride` and `flame-ui.consoleUpstream` together if renaming
+the management Service.
 
-Only endpoint/display information is exposed through `/api/connection`.
-Settings requests `/api/join` to obtain the current join command and expiration.
-The optional `api.join.secretName` mounts the operator-issued `<cluster>-join` Secret
-from the console namespace, reading its `token` and `expiresAt` keys on each
-request so projected Secret updates take effect without restarting. An absent
-or expired token is unavailable until a current token is projected. Standalone
-console processes can set `FLAME_JOIN_TOKEN_FILE` and `FLAME_JOIN_EXPIRY_FILE`
-to equivalent files. No Kubernetes API client or RBAC is needed.
+## Ports and TLS
 
-Serve the UI and API behind your trusted SSO ingress: anyone authorized to read
-Settings can copy the enrollment credential. TLS private keys are never
-returned. The console does not discover clusters.
+For the first Flame, native frontend/backend NodePorts are `30080`/`30081`;
+gateway session/cache ports are `30443`/`31443`. Later entries offset each base
+by ten: the second uses `30090`/`30091` and `30453`/`31453`. Explicit per-entry
+ports override these defaults. Rendering rejects collisions and ports outside
+the NodePort range across all configurations.
+
+Envoy uses a NodePort Service with `externalTrafficPolicy: Cluster`, without
+host networking or host-port binding. A DNS gateway uses DNS certificate SANs
+and hostname constraints; an IPv4 gateway uses IP SANs and routes without DNS
+hostname constraints. Ensure the selected node addresses accept NodePorts;
+some k3s configurations restrict them to the primary LAN address.
+
+Native FLM frontend/backend use server-authenticated TLS. Workers verify the
+advertised IP against validated public CA trust from FlameCluster status;
+Envoy verifies its upstream through BackendTLSPolicy. Server private keys stay
+in the Flame namespace. Server certificates retain their 24-hour lifetime and
+renew eight hours before expiry. Native worker transport does not provide
+client-certificate authentication; SRE network restrictions remain necessary.
+
+The backend supports `cluster.flame.tls` for standalone HTTP/HTTPS/mTLS endpoints.
+For managed Flames, it mounts only public CA trust and obtains join tokens using
+its exact scoped Secret permissions. Kubernetes Secret updates are read on
+demand, and credential responses use `Cache-Control: no-store`.
+
+## Worker lifecycle
+
+Join tokens renew every 15 minutes and are exchanged through the Kubernetes
+HTTPS Service proxy for a durable worker-scoped identity. Re-enrollment also
+requires the host's private enrollment key. The namespace in the token selects
+the Flame; explicit worker namespace/name checks reject mismatches.
+
+Flmlet first installs FEM through the upstream checksum-verified package's
+bundled `setup.sh --join --no-systemd`, then writes cluster configuration, then
+starts FEM. Installer failure cannot start FEM with an unconfigured runtime.
+`--check` remains read-only. `--configure` installs and writes configuration
+without starting services; normal reconciliation starts services afterward.
+
+A pinned version mismatch installs the selected runtime before reconfiguration.
+`latest` installs a missing runtime but does not poll for newer releases.
+`rolloutRevision` restarts managed services. Disable/deletion revokes the
+worker's credentials and stops its owned services; transient observation errors
+retain healthy services. Foreign units or configuration require explicit adoption.
 
 ## Upgrades and uninstall
 
-Helm installs files in `crds/` on first install but does not upgrade existing
-CRDs. Apply the generated schema before upgrading the operator chart:
+Apply updated Flame CRDs before upgrading the operator chart; Helm does not
+upgrade existing files in `crds/`:
 
 ```sh
 kubectl apply --server-side -f charts/flame-operator/crds/
 helm upgrade flame-operator charts/flame-operator --namespace flame-system
 ```
 
-The Rust FlameCluster API differs from the earlier Go controller's nested
-session/executor-manager configuration. Convert existing Go resources to the
-flat schema shown in `examples/flamecluster.yaml` before applying the new CRD.
-Existing installations are managed separately by SREs.
+Changing a Flame's namespace creates a separate identity boundary. Existing
+workers and exported clients must join/use the new namespace; their identities
+are not migrated or shared automatically.
 
-Uninstall the UI independently with Helm. The API belongs to the cluster chart
-release; disable it with `api.enabled=false` to remove it without uninstalling
-the FlameCluster resource. Uninstalling the operator leaves
-FlameCluster CRDs/resources for SRE-managed cleanup. Deleting a FlameCluster
-removes controller-owned resources; retain or back up persistent data according
-to the StorageClass/PV reclaim policy before deleting a cluster or its Helm release.
+Namespaces have `helm.sh/resource-policy: keep`, and the operator retains session
+PVCs. Removing a Flame removes its managed control-plane resources and revokes
+its worker credentials, while preserving namespace/storage for SRE cleanup.
+Uninstall the UI independently; the management service belongs to the combined
+cluster release. Back up data before deleting namespaces or retained storage.

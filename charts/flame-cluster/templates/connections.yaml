@@ -1,0 +1,11 @@
+{{- if .Values.flames }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-connections" (include "flame-cluster.fullname" .) }}
+  labels:
+    {{- include "flame-cluster.labels" . | nindent 4 }}
+data:
+  connections.json: |
+    {{- include "flame-cluster.connections" . | nindent 4 }}
+{{- end }}

@@ -1,18 +1,16 @@
-{{- if .Values.api.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "flame-cluster.api.fullname" . }}
+  name: {{ include "flame-cluster.fullname" . }}
   labels:
-    {{- include "flame-cluster.api.labels" . | nindent 4 }}
+    {{- include "flame-cluster.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.api.service.type }}
+  type: {{ .Values.cluster.service.type }}
   selector:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: api
+    app.kubernetes.io/component: cluster
   ports:
     - name: http
-      port: {{ .Values.api.service.port }}
+      port: {{ .Values.cluster.service.port }}
       targetPort: http
-{{- end }}

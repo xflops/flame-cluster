@@ -11,7 +11,7 @@ selection is configurable; worker-network isolation remains an SRE responsibilit
 | `flame-api` | Own FlameCluster/FlameWorker definitions, validation, and CRD generation. |
 | [flame-operator](flame-operator/README.md) | Reconcile Flame session-manager storage, services, certificates and gateway routes. |
 | [flmlet](flmlet/README.md) | Install FEM through upstream Flame setup, configure it, and reconcile host services. |
-| [flame-cluster](flame-cluster/README.md) | Read nodes, applications, sessions, executors and tasks directly from a configured FLM; forward session actions. |
+| [flame-cluster](flame-cluster/README.md) | Read nodes, applications, sessions, executors and tasks directly from a configured namespaced FLMs; forward selected session actions. |
 | [flame-ui](flame-ui/README.md) | Serve the Flame console at `/`. |
 
 There is no platform operator, logical manager, Terraform, Ansible,
@@ -32,7 +32,7 @@ Setup uses the active kubeconfig server for Kubernetes access and the
 session-manager/cache NodePort host. Defaults require no values file; `--values`
 is optional. SREs prepare the dependencies described below. The operator generates
 a cluster join token and renews it every 15 minutes. Open the UI at `/`, select
-**Settings**, and copy the **Join a node** command. Run it on the prepared worker
+a namespace in the selector, open **Settings**, and copy the **Join a node** command. Run it on the prepared worker
 host with `setup.sh` available; no `kubectl` token lookup is needed. Flmlet runs
 upstream `flame/setup.sh --join` with service startup suppressed, prepares the
 cluster config, and starts FEM only after configuration succeeds.
@@ -56,41 +56,29 @@ reachable node. Envoy uses a NodePort Service. Reserve unique ports across clust
 session-manager pair `30080`/`30081`. All four ports are configurable in Helm
 values; `gateway.ingressIp` is optional advertised-address metadata only.
 
-For manual Helm installation, supply the addresses that setup would derive.
-This example uses a Kubernetes node at `192.168.3.10`:
+The management Service and Deployment are `cluster`; its image is
+`docker.io/xflops/flame-cluster`. The combined `flame-cluster` chart always runs
+that service. Its settings live under `cluster`, and `flames` is an ordered list
+of Flame configurations. The default first resource is `flame-ns-1/flame-1`;
+further entries receive indexed names and separate namespaces and ports.
 
-```sh
-helm upgrade --install flame-operator charts/flame-operator \
-  --namespace flame-system --create-namespace
-helm upgrade --install flame charts/flame-cluster --namespace flame-system \
-  --set gateway.hostname=192.168.3.10 --set endpointHost=192.168.3.10 \
-  --set kubernetesEndpoint=https://192.168.3.10:6443
-helm upgrade --install flame-ui charts/flame-ui --namespace flame-system
-```
+Each namespace owns its FlameCluster, FlameWorkers, client credentials, and join
+Secret. Worker permissions and gateway client identities are scoped to that
+Flame. The management API may read only the configured exact join Secrets; it
+cannot list Secrets or read client private keys.
 
-Setup defaults the UI external IP to the IPv4 address of the kubeconfig server
-(without its API port) and adds it to the API host allowlist. To use the
-manager's Tailscale IPv4, use that address in the selected kubeconfig server
-endpoint. Open `http://<tailscale-ip>/` to view the configured cluster's
-Applications page; see [direct access](docs/deployment.md#direct-tailscale-access)
-for Helm commands.
-The selector lists only that cluster. The Compact sidebar order is
-Nodes → Executors → Applications → Sessions → Settings. Settings shows the
-connection and the current node join command, including its expiration.
+Open `http://<kubeconfig-server-ip>/`. Setup derives the UI external IP and host
+allowlist directly from kubeconfig, without a UI-address flag or port-forward.
+The selector shows namespaces only and opens the first configured Flame by
+default; it has no All clusters option or aggregate page. Navigation is Nodes →
+Executors → Applications → Sessions → Settings, with Compact density throughout.
 
-The generated `flame.yaml` bundle uses a one-year TLS client certificate,
-renewed 30 days before expiry. Exported copies must be refreshed separately.
-This lifetime is separate from the 15-minute node join token rotation.
-
-The console talks directly to FLM and has no
-Kubernetes client, service-account token or Kubernetes RBAC. For an existing FLM,
-install `charts/flame-cluster` with `cluster.enabled=false` and set
-`api.flame.endpoint` to that service, then install `charts/flame-ui`. The combined
-cluster chart deploys the FlameCluster resource and its API by default;
-`api.enabled=false` omits the API. Its image is `docker.io/xflops/flame-cluster`,
-and its default Service name is `cluster`.
-See [Helm values and SRE prerequisites](docs/deployment.md) for TLS, image selection,
-external cache endpoints, CRD upgrades and uninstall behavior.
+The generated `flame.yaml` client credential lasts one year, with renewal 30 days
+before expiry. Exported copies need a separate refresh. Node join tokens keep
+their separate 15-minute rotation. The backend connects directly to in-cluster
+FLM Services; only remote browser/administrative traffic uses Tailscale.
+See [deployment and configuration](docs/deployment.md) for multiple Flames,
+namespace isolation, TLS, external FLMs, CRD upgrades, and storage retention.
 
 ## Development
 

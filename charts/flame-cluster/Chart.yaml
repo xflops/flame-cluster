@@ -1,6 +1,6 @@
 apiVersion: v2
 name: flame-cluster
-description: A FlameCluster resource and management API for SRE-managed infrastructure.
+description: Management service and indexed FlameCluster resources for SRE-managed infrastructure.
 type: application
 version: 0.1.0
 appVersion: latest

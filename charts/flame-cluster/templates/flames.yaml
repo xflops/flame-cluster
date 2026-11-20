@@ -1,0 +1,21 @@
+{{- range $flame := (include "flame-cluster.flames" . | fromJsonArray) }}
+---
+apiVersion: flame.xflops.io/v1alpha1
+kind: FlameCluster
+metadata:
+  name: {{ $flame.name }}
+  namespace: {{ $flame.namespace }}
+spec:
+  {{- $spec := omit $flame "name" "namespace" "endpointHost" "endpoint" "storageClass" "existingClaim" "kubernetesEndpoint" }}
+  {{- if $flame.endpoint }}
+  {{- $_ := set $spec "endpoint" $flame.endpoint }}
+  {{- else if $flame.endpointHost }}
+  {{- $_ := set $spec "endpoint" (printf "%s:%v" $flame.endpointHost $flame.nodePort) }}
+  {{- end }}
+  {{- range $key := list "storageClass" "existingClaim" "kubernetesEndpoint" }}
+  {{- with (get $flame $key) }}
+  {{- $_ := set $spec $key . }}
+  {{- end }}
+  {{- end }}
+  {{- toYaml $spec | nindent 2 }}
+{{- end }}

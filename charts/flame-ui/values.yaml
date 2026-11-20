@@ -1,0 +1,20 @@
+fullnameOverride: ""
+image:
+  repository: docker.io/xflops/flame-ui
+  tag: latest
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 512Mi
+replicaCount: 1
+service:
+  type: ClusterIP
+  port: 80
+consoleUpstream: flame-console:3000

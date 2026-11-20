@@ -1,0 +1,163 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: flameworkers.flame.xflops.io
+spec:
+  group: flame.xflops.io
+  names:
+    kind: FlameWorker
+    plural: flameworkers
+    singular: flameworker
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterRef
+      name: Cluster
+      type: string
+    - jsonPath: .status.registered
+      name: Registered
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for FlameWorkerSpec via `CustomResource`
+        properties:
+          spec:
+            description: An SRE-installed host executor manager reconciled by the local flmlet.
+            properties:
+              address:
+                description: RFC 1918 worker LAN cache address, never a control-plane lookup.
+                type: string
+              cachePort:
+                default: 9090
+                format: uint16
+                maximum: 65535.0
+                minimum: 0.0
+                type: integer
+              clusterRef:
+                description: Name of a FlameCluster in this worker's namespace.
+                type: string
+              disabled:
+                default: false
+                type: boolean
+              endpoint:
+                description: Optional frontend ip:NodePort override; otherwise use FlameCluster.spec.endpoint.
+                nullable: true
+                type: string
+              manageObjectCache:
+                default: false
+                description: Only manage the separately installed cache service when explicitly enabled.
+                type: boolean
+              maxExecutors:
+                default: 10
+                format: uint32
+                minimum: 0.0
+                type: integer
+              pythonVersion:
+                default: '3.12'
+                type: string
+              rolloutRevision:
+                default: ''
+                type: string
+              shims:
+                default:
+                - cri
+                items:
+                  type: string
+                type: array
+            required:
+            - address
+            - clusterRef
+            type: object
+          status:
+            nullable: true
+            properties:
+              cacheReady:
+                default: false
+                type: boolean
+              conditions:
+                default: []
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - observedGeneration
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              configHash:
+                type: string
+              fem:
+                default:
+                  activeState: ''
+                  message: ''
+                  subState: ''
+                properties:
+                  activeState:
+                    type: string
+                  message:
+                    default: ''
+                    type: string
+                  subState:
+                    type: string
+                required:
+                - activeState
+                - subState
+                type: object
+              hostname:
+                nullable: true
+                type: string
+              installedVersion:
+                nullable: true
+                type: string
+              lastHeartbeatTime:
+                type: string
+              objectCache:
+                nullable: true
+                properties:
+                  activeState:
+                    type: string
+                  message:
+                    default: ''
+                    type: string
+                  subState:
+                    type: string
+                required:
+                - activeState
+                - subState
+                type: object
+              observedGeneration:
+                format: int64
+                type: integer
+              registered:
+                default: false
+                type: boolean
+            required:
+            - configHash
+            - lastHeartbeatTime
+            - observedGeneration
+            type: object
+        required:
+        - spec
+        title: FlameWorker
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

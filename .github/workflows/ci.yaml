@@ -1,64 +1,215 @@
-name: CI
-
+name: Flame CI
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
-
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
+  unit-test:
+    name: Unit test
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
         with:
-          go-version: '1.21'
-          cache: true
-      
-      - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-      - name: Lint
-        run: make lint
-
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.95 --profile minimal --component clippy,rustfmt && rustup default 1.95
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+      - name: Install Helm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/install-tools.sh helm
+      - name: Check Rust, generated CRD and Helm charts
+        run: bash ci/check.sh
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: flame-ui/package-lock.json
+      - name: Test UI models and mocked interactions
+        working-directory: flame-ui
+        run: |
+          npm ci
+          npm test
+          npx playwright install --with-deps chromium
+          npm run test:browser
   build:
-    name: Build
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.arch }})
+    needs: unit-test
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
         with:
-          go-version: '1.21'
-          cache: true
-      
-      - name: Build
-        run: make build
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and check native images
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash ci/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flame-images-${{ matrix.arch }}
+          path: ${{ runner.temp }}/flame-images-${{ matrix.arch }}.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flame-release-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/flame-release-${{ matrix.arch }}/*.tar.gz
+            ${{ runner.temp }}/flame-release-${{ matrix.arch }}/SHA256SUMS*
+            ${{ runner.temp }}/flame-release-${{ matrix.arch }}/setup.sh
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+  e2e:
+    name: E2E test
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
         with:
-          go-version: '1.21'
-          cache: true
-      
-      - name: Test
-        run: make test
-      
-      - name: Upload coverage
-        uses: actions/upload-artifact@v4
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
         with:
-          name: coverage
-          path: coverage.out
-
-
+          name: flame-images-amd64
+          path: .ci-artifacts
+      - uses: actions/download-artifact@v8
+        with:
+          name: flame-release-amd64
+          path: .ci-artifacts
+      - name: Install test tooling
+        run: bash ci/install-tools.sh helm kind
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: flame-ui/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install live browser test dependencies
+        working-directory: flame-ui
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Test real tasks, flamepy.app and live console
+        env:
+          E2E_ARTIFACTS: ${{ github.workspace }}/.ci-artifacts
+        run: bash ci/e2e.sh
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp || true
+          kubectl -n flame-system describe flamecluster flame || true
+          kubectl -n flame-system logs deployment/flame-operator --tail=150 || true
+          kubectl -n flame-system logs deployment/flame-console --tail=100 || true
+          kubectl -n flame-system logs deployment/flame-session-manager --tail=100 || true
+          kubectl -n flame-system get flameworker flame-ci-worker -o yaml || true
+          docker exec flame-ci-worker journalctl -u flmlet -u flame-executor-manager -u flame-object-cache --no-pager -n 150 || true
+          cat "$RUNNER_TEMP/flame-ci/flmping.log" "$RUNNER_TEMP/flame-ci/executor-probe.log" 2>/dev/null || true
+          kubectl -n envoy-gateway-system logs deployment/envoy-gateway --tail=100 || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: functional-e2e-results
+          path: |
+            ${{ runner.temp }}/flame-ci/*.json
+            ${{ runner.temp }}/flame-ci/*.log
+            ${{ runner.temp }}/flame-ci/coverage.md
+            flame-ui/test-results/
+          if-no-files-found: ignore
+      - name: Destroy the disposable test cluster
+        if: always()
+        run: |
+          docker rm --force flame-ci-worker 2>/dev/null || true
+          kind delete cluster --name flame-ci
+  publish:
+    name: Publish
+    needs: e2e
+    if: github.repository == 'xflops/flame-cluster' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
+      - name: Check Docker Hub publishing credentials
+        env:
+          DOCKER_HUB_USERNAME: ${{ vars.DOCKER_HUB_USERNAME }}
+          DOCKER_HUB_PAT: ${{ secrets.DOCKER_HUB_PAT }}
+        run: |
+          test -n "$DOCKER_HUB_USERNAME" || { echo 'Configure the DOCKER_HUB_USERNAME repository variable.' >&2; exit 1; }
+          test -n "$DOCKER_HUB_PAT" || { echo 'Configure the DOCKER_HUB_PAT Actions secret with write access to Flame images.' >&2; exit 1; }
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PAT }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: flame-images-*
+          path: images
+          merge-multiple: true
+      - name: Push native images and multiarchitecture manifests
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            docker load --input "images/flame-images-$arch.tar.gz"
+            for component in flame-operator flame-console flame-ui; do
+              docker push "xflops/$component:sha-$GITHUB_SHA-$arch"
+            done
+          done
+          for component in flame-operator flame-console flame-ui; do
+            docker buildx imagetools create \
+              --tag "xflops/$component:sha-$GITHUB_SHA" --tag "xflops/$component:latest" \
+              "xflops/$component:sha-$GITHUB_SHA-amd64" \
+              "xflops/$component:sha-$GITHUB_SHA-arm64"
+            docker buildx imagetools inspect "xflops/$component:sha-$GITHUB_SHA"
+          done
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: flame-release-*
+          path: release
+          merge-multiple: true
+      - name: Publish tested worker and Helm assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/publish-release.sh release
+      - name: Publish cluster installer
+        env:
+          GH_TOKEN: ${{ secrets.XFLOPS_CLUSTER_TOKEN }}
+        run: bash ci/publish-setup.sh
+      - name: Record published image revision
+        run: jq -n --arg revision "$GITHUB_SHA" --arg ref "$GITHUB_REF" '{revision:$revision,ref:$ref}' > "$RUNNER_TEMP/published-images.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: published-images
+          path: ${{ runner.temp }}/published-images.json
+          retention-days: 7

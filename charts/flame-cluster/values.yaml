@@ -1,0 +1,23 @@
+nameOverride: flame
+version: latest
+endpoint: ""
+kubernetesEndpoint: ""
+rolloutRevision: ""
+image: docker.io/xflops/flame-session-manager:latest
+nodePort: 30080
+storageSize: 20Gi
+storageClass: ""
+existingClaim: ""
+resources:
+  requests: {cpu: "1", memory: 1Gi}
+  limits: {cpu: "4", memory: 8Gi}
+nodeSelector: {}
+cacheEndpoints: []
+gateway:
+  hostname: ""
+  sessionPort: 30443
+  cachePort: 31443
+  className: flame-envoy
+  envoyNamespace: envoy-gateway-system
+  issuerName: flame-client-ca
+  clientAuth: true

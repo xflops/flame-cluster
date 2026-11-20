@@ -1,0 +1,6 @@
+apiVersion: v2
+name: flame-worker
+description: A FlameWorker resource for a host managed by flmlet.
+type: application
+version: 0.1.0
+appVersion: latest

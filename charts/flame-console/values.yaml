@@ -1,0 +1,37 @@
+fullnameOverride: ""
+image:
+  repository: docker.io/xflops/flame-console
+  tag: latest
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 512Mi
+replicaCount: 1
+security:
+  # Add the exact UI/SSO ingress hostname; no wildcard or port entries.
+  allowedHosts: [localhost, 127.0.0.1, "::1"]
+service:
+  type: ClusterIP
+  port: 3000
+# Set this to the direct Flame session-manager endpoint, not Kubernetes.
+flame:
+  endpoint: ""
+  name: Flame
+  tls:
+    # SRE public trust ConfigMap in this namespace, containing caKey.
+    # Takes precedence over CA trust from secretName.
+    caConfigMap: ""
+    # Optional SRE client identity Secret; no credentials are generated here.
+    # Also supports legacy CA trust when caConfigMap is empty.
+    secretName: ""
+    caKey: ca.crt
+    certKey: ""
+    keyKey: ""
+    domain: ""

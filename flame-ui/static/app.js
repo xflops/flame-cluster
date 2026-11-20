@@ -1,0 +1,255 @@
+import { views, escapeHtml as e, number as n, formatNumber as f, bytes, nameOf, idOf, stateOf, shim, parseRoute } from './model.js';
+const $ = selector => document.querySelector(selector);
+const paths = {
+  applications: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  sessions: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  nodes: '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M12 6.5h5M12 17.5h5"/>',
+  executors: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><path d="m10 10 4 2-4 2z"/>',
+};
+const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
+const state = { view: parseRoute(location.hash), connection: null, pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
+let pollController, taskController, revision = 0;
+const pageSize = 12;
+const apiBase = () => '/api';
+const pageCache = new Map();
+function resourceUrl() {
+  return `/api/${state.view}?${new URLSearchParams({ page: state.page + 1, pageSize, state: state.filter })}`;
+}
+function restorePage() {
+  const cached = pageCache.get(resourceUrl());
+  if (cached && Date.now() - cached.receivedAt.getTime() < 300000) {
+    state.pages[state.view] = cached.data; state.lastUpdate = cached.receivedAt;
+  } else delete state.pages[state.view];
+}
+const badge = label => {
+  const tone = ['Ready', 'Enabled', 'Succeeded', 'Applied'].includes(label) ? 'green' : ['Open', 'Running', 'Bound'].includes(label) ? 'blue' : ['Pending', 'Binding', 'Suspending', 'Releasing', 'Deferred', 'Reconciling', 'Stale'].includes(label) ? 'orange' : ['Failed', 'Not ready'].includes(label) ? 'red' : '';
+  return `<span class="badge ${tone}">${e(label)}</span>`;
+};
+const readiness = label => `<span class="readiness"><span class="ready-circle ${label === 'Ready' ? 'good' : label === 'Not ready' ? 'bad' : ''}" aria-hidden="true"></span>${e(label)}</span>`;
+const date = value => value ? new Date(Number(value)).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const empty = (title, description, kind = state.view) => `<div class="empty">${icon(kind)}<h3>${e(title)}</h3><p>${e(description)}</p></div>`;
+function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th scope="col">${e(header)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`; }
+function resourceLink(row, index, subtitle = '', kind = state.view) {
+  return `<button class="row-link" data-row="${index}"><span class="resource-icon">${icon(kind)}</span><span>${e(nameOf(row))}${subtitle ? `<span class="secondary">${e(subtitle)}</span>` : ''}</span></button>`;
+}
+function sessionProgress(status, detailed = false) {
+  if (!status) return '<span class="dim">Progress unavailable</span>';
+  const phases = [
+    ['pending', 'Pending', status.pending], ['running', 'Running', status.running],
+    ['succeeded', 'Succeeded', status.succeed], ['failed', 'Failed', status.failed],
+    ['cancelled', 'Cancelled', status.cancelled],
+  ].map(([key, label, value]) => ({key, label, count: Math.max(0, n(value))}));
+  const total = phases.reduce((sum, phase) => sum + phase.count, 0);
+  const complete = phases.filter(phase => ['succeeded','failed','cancelled'].includes(phase.key)).reduce((sum, phase) => sum + phase.count, 0);
+  const percentage = total ? Math.round(complete / total * 100) : 0;
+  const description = total ? phases.filter(phase => phase.key !== 'cancelled' || phase.count).map(phase => `${phase.label}: ${f(phase.count)}`).join(' · ') : 'No tasks';
+  const segments = phases.filter(phase => phase.count).map(phase => `<span class="session-progress-segment ${phase.key}" style="width:${phase.count / total * 100}%" title="${phase.label}: ${f(phase.count)}" aria-hidden="true"></span>`).join('');
+  const legend = detailed ? `<div class="session-progress-legend">${phases.filter(phase => phase.key !== 'cancelled' || phase.count).map(phase => `<span><i class="phase-dot ${phase.key}" aria-hidden="true"></i>${phase.label} <strong>${f(phase.count)}</strong></span>`).join('')}</div>` : '';
+  return `<div class="session-progress${detailed ? ' detailed' : ''}"><div class="session-progress-track" role="progressbar" aria-label="Task completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage}" aria-valuetext="${e(description)}" title="${e(description)}">${segments}</div><div class="session-progress-caption"><span>${total ? `${f(complete)} / ${f(total)} completed` : 'No tasks'}</span><span>${percentage}%</span></div>${legend}</div>`;
+}
+
+const sessionCommands = {suspend:'Suspend',close:'Close',resume:'Resume',delete:'Delete'};
+function sessionActions(row, index) {
+  const allowed = {0:['suspend','close'],1:['delete'],3:['resume']}[row.status?.state] || [];
+  return `<div class="session-actions"><button class="button small subtle" data-row="${index}">View</button>${allowed.map(action => `<button class="button small" data-action="${action}" data-index="${index}" ${state.action ? 'disabled' : ''}>${sessionCommands[action]}</button>`).join('')}</div>`;
+}
+async function actOnSession(row, action) {
+  if (state.action) return;
+  const id = idOf(row);
+  if (['close','delete'].includes(action) && !confirm(`${sessionCommands[action]} session “${id}”?${action === 'delete' ? ' Its task history will be removed.' : ' It will no longer accept tasks.'}`)) return;
+  revision++; pollController?.abort(); state.loading = false;
+  const generation = revision;
+  state.action = action; delete state.errors.action; render();
+  try {
+    const response = await fetch(`${apiBase()}/sessions/${encodeURIComponent(id)}/actions/${action}`, {method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(15000)});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Unable to change session. Refresh and retry.');
+    if (generation === revision) {pageCache.clear(); state.pages = {};}
+  } catch (error) {
+    if (generation === revision) state.errors.action = error.name === 'TimeoutError' ? 'Action timed out. Refresh before retrying.' : error.message;
+  } finally {
+    if (generation === revision) {state.action = null; render(); refresh();}
+  }
+}
+
+function renderNavigation() {
+  $('#navigation').innerHTML = Object.entries(views).map(([key, view]) => `<a class="nav-item ${state.view === key ? 'active' : ''}" href="#/${key}" ${state.view === key ? 'aria-current="page"' : ''}>${icon(key)}${view.title}</a>`).join('');
+  const nav = $('#navigation'), selected = nav.querySelector('[aria-current="page"]');
+  if (selected && nav.scrollWidth > nav.clientWidth) {
+    const box = selected.getBoundingClientRect(), frame = nav.getBoundingClientRect();
+    if (box.right > frame.right) nav.scrollLeft += box.right - frame.right + 8;
+    else if (box.left < frame.left) nav.scrollLeft -= frame.left - box.left + 8;
+  }
+}
+function render() {
+  renderNavigation();
+  const view = views[state.view];
+  $('#connection-name').textContent = state.connection?.displayName || 'Flame';
+  $('#connection-name').title = state.connection?.endpoint || '';
+  $('#page-title').textContent = view.title;
+  $('#page-description').textContent = view.description;
+  $('#breadcrumb-detail').textContent = view.title;
+  $('#section-title').textContent = `All ${view.title.toLowerCase()}`;
+  $('#eyebrow').textContent = (state.connection?.displayName || 'Flame').toUpperCase();
+  const filter = $('#status-filter');
+  filter.innerHTML = '<option value="">All states</option>' + view.states.map(s => `<option>${e(s)}</option>`).join('');
+  filter.value = state.filter;
+  $('#auto-refresh').textContent = state.auto ? 'Auto-refresh on' : 'Auto-refresh off';
+  $('#auto-refresh').setAttribute('aria-pressed', String(state.auto));
+  $('#refresh').disabled = state.loading;
+  $('#updated').textContent = state.lastUpdate ? `Updated ${state.lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : 'Connecting…';
+  const errors = Object.entries(state.errors), data = state.pages[state.view];
+  $('#notice').hidden = !errors.length;
+  $('#notice').textContent = errors.length ? `${errors.map(([key, value]) => `${key}: ${value}`).join(' · ')}${data ? ' Displaying the last successful data where available.' : ''}` : '';
+  const dot = $('#connection-dot');
+  dot.className = `live-dot ${errors.length ? 'bad' : state.lastUpdate ? 'good' : ''}`;
+  dot.title = errors.length ? 'Some data is unavailable' : state.lastUpdate ? 'Connected' : 'Connecting';
+  const rows = data?.items || [], total = data?.total ?? rows.length;
+  $('#row-count').textContent = data ? f(total) : '—';
+  $('#previous').disabled = state.page === 0 || !data;
+  $('#next').disabled = !data?.hasNext;
+  $('#page-number').textContent = `Page ${state.page + 1} of ${Math.max(1, Math.ceil(total / pageSize))}`;
+  $('#table-caption').textContent = rows.length ? `Showing ${state.page * pageSize + 1}–${Math.min(state.page * pageSize + rows.length, total)} of ${f(total)} ${state.view}` : `0 ${state.view}`;
+  if (!data) {
+    $('#content').innerHTML = empty(errors.length ? 'Unable to load data' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Live data will appear here shortly.'); return;
+  }
+  if (!rows.length) {
+    $('#content').innerHTML = empty(state.filter ? 'No matching resources' : `No ${state.view} yet`, state.filter ? 'Try a different state filter.' : 'Resources will appear here when they are registered with Flame.'); return;
+  }
+  const displayed = rows;
+  if (state.view === 'applications') {
+    $('#content').innerHTML = table(['Application name', 'Status', 'Runtime', 'Created', 'Command', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, row.spec?.description)}</td><td>${badge(stateOf(row, 'applications'))}</td><td><span class="tag">${shim(row.spec?.shim)}</span></td><td>${date(row.status?.creation_time)}</td><td class="command mono" title="${e(row.spec?.command)}">${e(row.spec?.command)}</td><td class="chevron">›</td></tr>`));
+  } else if (state.view === 'sessions') {
+    $('#content').innerHTML = table(['Session', 'State', 'Application', 'Task progress', 'Created', 'Actions'], displayed.map((row, i) => `<tr><td>${resourceLink(row, i)}</td><td>${badge(stateOf(row, 'sessions'))}</td><td>${e(row.spec?.application)}</td><td>${sessionProgress(row.status)}</td><td>${date(row.status?.creation_time)}</td><td>${sessionActions(row, i)}</td></tr>`));
+  } else if (state.view === 'nodes') {
+    $('#content').innerHTML = table(['Node', 'Ready', 'CPU capacity', 'Memory', 'GPU', 'Allocatable CPU', 'System', 'Heartbeat', ''], displayed.map((row, i) => {
+      const available = row.status?.allocatable?.cpu;
+      const cpu = n(row.status?.capacity?.cpu);
+      return `<tr><td>${resourceLink(row, i, row.spec?.hostname !== nameOf(row) ? row.spec?.hostname : row.status?.info?.arch)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${cpu} <span class="dim">cores</span></td><td>${bytes(row.status?.capacity?.memory)}</td><td>${row.status?.capacity ? f(row.status.capacity.gpu) : '—'}</td><td><div class="allocation"><div class="progress-track"><span style="width:${cpu ? Math.min(100, n(available) / cpu * 100) : 0}%"></span></div><span>${available ?? '—'} <span class="dim">/ ${cpu}</span></span></div></td><td>${e(row.status?.info?.os)}<span class="secondary">${e(row.status?.info?.arch)}</span></td><td>${date(n(row.status?.last_heartbeat_time) * 1000)}</td><td class="chevron">›</td></tr>`;
+    }));
+  } else {
+    $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));
+  }
+  document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => actOnSession(displayed[Number(button.dataset.index)], button.dataset.action)));
+  document.querySelectorAll('[data-row]').forEach(button => button.addEventListener('click', () => openDetails(displayed[Number(button.dataset.row)])));
+}
+async function json(url, signal) {
+  const response = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
+async function refresh() {
+  if (state.loading || state.action) return;
+  const generation = revision, controller = new AbortController();
+  pollController = controller;
+  const timer = setTimeout(() => controller.abort(), 22000);
+  state.loading = true; render();
+  async function load(key, url, apply) {
+    try {
+      const data = await json(url, controller.signal);
+      if (generation !== revision) return;
+      apply(data); delete state.errors[key];
+      if (key !== 'connection') {
+        const receivedAt = new Date(); state.lastUpdate = receivedAt;
+        pageCache.delete(url); pageCache.set(url, { data, receivedAt });
+        if (pageCache.size > 24) pageCache.delete(pageCache.keys().next().value);
+      }
+      render();
+    } catch (error) {
+      if (generation !== revision) return;
+      state.errors[key] = error.name === 'AbortError' ? 'Request timed out' : error.message;
+      render();
+    }
+  }
+  const view = state.view;
+  await Promise.allSettled([
+    load('connection', '/api/connection', data => { state.connection = data; }),
+    load(view, resourceUrl(), data => { state.pages[view] = data; }),
+  ]);
+  clearTimeout(timer);
+  if (generation !== revision) return;
+  state.loading = false;
+  const data = state.pages[state.view];
+  if (data && state.page && state.page * pageSize >= data.total) {
+    state.page = Math.max(0, Math.ceil(data.total / pageSize) - 1); delete state.pages[state.view]; refresh(); return;
+  }
+  render();
+}
+function queryChanged() {
+  revision++; pollController?.abort(); state.loading = false;
+  restorePage(); render(); refresh();
+}
+const properties = rows => `<dl class="properties">${rows.map(([label, value]) => `<dt>${e(label)}</dt><dd>${e(value)}</dd>`).join('')}</dl>`;
+function openDetails(row) {
+  taskController?.abort();
+  state.drawer = row;
+  $('#detail-title').textContent = nameOf(row);
+  $('#detail-kind').textContent = `${state.connection?.displayName || 'Flame'} · ${state.view.slice(0, -1)}`.toUpperCase();
+  const status = state.view === 'nodes' ? readiness(stateOf(row, state.view)) : badge(stateOf(row, state.view));
+  let detail = status;
+  if (state.view === 'applications') {
+    detail += properties([['Runtime', shim(row.spec?.shim)], ['Description', row.spec?.description], ['Created', date(row.status?.creation_time)], ['Image', row.spec?.image], ['Package URL', row.spec?.url], ['Working directory', row.spec?.working_directory], ['Maximum instances', row.spec?.max_instances ?? 'Unlimited'], ['Labels', row.spec?.labels?.join(', ') || '—']]);
+    detail += '<div class="drawer-section"><h3>Command</h3></div><pre>' + e([row.spec?.command, ...(row.spec?.arguments || [])].filter(Boolean).join(' ')) + '</pre>';
+    if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
+  } else if (state.view === 'nodes') {
+    const info = row.status?.info || {};
+    detail += properties([['Hostname', row.spec?.hostname], ['Operating system', info.os_image || info.os], ['Architecture', info.arch], ['Kernel', info.kernel_version], ['CPU capacity', `${n(row.status?.capacity?.cpu)} cores`], ['Memory capacity', bytes(row.status?.capacity?.memory)], ['GPUs', n(row.status?.capacity?.gpu)], ['Heartbeat', date(n(row.status?.last_heartbeat_time) * 1000)], ['Runtimes', row.spec?.shims?.map(shim).join(', ')]]);
+    detail += '<div class="drawer-section"><h3>Network addresses</h3></div>' + table(['Type', 'Address'], (row.status?.addresses || []).map(a => `<tr><td>${e(a.type)}</td><td class="mono">${e(a.address)}</td></tr>`));
+    if (info.pci_devices?.length) detail += '<div class="drawer-section"><h3>PCI devices</h3></div>' + table(['Address', 'Vendor / Device', 'Driver'], info.pci_devices.map(p => `<tr><td class="mono">${e(p.address)}</td><td class="mono">${e(p.vendor_id)} / ${e(p.device_id)}</td><td>${e(p.driver)}</td></tr>`));
+    detail += '<p class="detail-note">Capacity and allocatable CPU are reported by Flame, not measured CPU utilization.</p>';
+  } else if (state.view === 'executors') {
+    detail += properties([['Node', row.spec?.node], ['Application', row.spec?.application], ['Session', row.status?.session_id], ['Runtime', shim(row.spec?.shim)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)], ['GPU request', n(row.spec?.resreq?.gpu)]]);
+  } else {
+    detail += properties([['Application', row.spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)], ['Priority', n(row.spec?.priority)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)]]);
+    detail += `${sessionProgress(row.status, true)}<div class="drawer-section"><h3>Tasks</h3><button class="button small" id="refresh-tasks">Refresh tasks</button></div><div id="tasks"></div>`;
+    if (row.status?.events?.length) detail += '<div class="drawer-section"><h3>Session events</h3></div><pre>' + e(row.status.events.map(event => `${date(event.creation_time)}  ${event.message || event.code}`).join('\n')) + '</pre>';
+  }
+  $('#detail-content').innerHTML = detail;
+  if (!$('#details').open) $('#details').showModal();
+  if (state.view === 'sessions') {
+    $('#refresh-tasks').addEventListener('click', () => loadTasks(row));
+    loadTasks(row);
+  }
+}
+async function loadTasks(row, page = 1) {
+  taskController?.abort();
+  taskController = new AbortController();
+  const controller = taskController;
+  const signal = controller.signal;
+  const target = $('#tasks');
+  target.innerHTML = '<div class="empty"><div class="spinner"></div><p>Loading tasks…</p></div>';
+  const timer = setTimeout(() => controller.abort(), 23000);
+  try {
+    const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}/tasks?page=${page}&pageSize=${pageSize}`, signal);
+    if (signal.aborted || state.drawer !== row) return;
+    const tasks = data.items;
+    target.innerHTML = tasks.length ? table(['Task', 'State', 'Created', 'Completed'], tasks.map(task => `<tr><td class="mono">${e(idOf(task))}</td><td>${badge(stateOf(task, 'tasks'))}</td><td>${date(task.status?.creation_time)}</td><td>${date(task.status?.completion_time)}</td></tr>`)) : empty(page === 1 ? 'No tasks yet' : 'No tasks on this page', page === 1 ? 'Tasks submitted to this session will appear here.' : 'Use Previous tasks to return to an earlier page.', 'sessions');
+    target.insertAdjacentHTML('beforeend', `<div class="pagination task-pagination"><button class="button small" id="tasks-previous" ${page === 1 ? 'disabled' : ''}>← Previous tasks</button><span>Page ${page}</span><button class="button small" id="tasks-next" ${data.hasNext ? '' : 'disabled'}>Next tasks →</button></div>`);
+    $('#tasks-previous').addEventListener('click', () => loadTasks(row, page - 1));
+    $('#tasks-next').addEventListener('click', () => loadTasks(row, page + 1));
+  } catch (error) {
+    if (taskController === controller && state.drawer === row) target.innerHTML = `<div class="notice">${e(error.name === 'AbortError' ? 'Task request timed out. Use Refresh tasks to retry.' : error.message)}</div>`;
+  } finally { clearTimeout(timer); }
+}
+function route() {
+  revision++; pollController?.abort(); taskController?.abort();
+  state.view = parseRoute(location.hash);
+  if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
+  Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null});
+  restorePage(); $('#details').close();
+  document.title = `${views[state.view].title} · Flame Console`;
+  render(); refresh();
+}
+$('#status-filter').addEventListener('change', event => { state.filter = event.target.value; state.page = 0; queryChanged(); });
+$('#refresh').addEventListener('click', refresh);
+$('#auto-refresh').addEventListener('click', () => { state.auto = !state.auto; render(); });
+$('#previous').addEventListener('click', () => { state.page--; queryChanged(); });
+$('#next').addEventListener('click', () => { state.page++; queryChanged(); });
+$('#close-details').addEventListener('click', () => $('#details').close());
+$('#details').addEventListener('close', () => { state.drawer = null; taskController?.abort(); });
+$('#details').addEventListener('click', event => { if (event.target === $('#details') && event.clientX < $('#details').getBoundingClientRect().left) $('#details').close(); });
+window.addEventListener('hashchange', route);
+window.addEventListener('resize', renderNavigation);
+setInterval(() => { if (state.auto && !document.hidden) refresh(); }, 15000);
+route();

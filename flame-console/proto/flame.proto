@@ -1,0 +1,299 @@
+// Apache-2.0. Console wire-compatible subset of xflops/flame rpc/protos,
+// revision 946e7dcb0fc67a97ac67db0abdd7a61b5b9eca57. Keep upstream field numbers.
+// Credentials, environment variables and task payloads are deliberately omitted.
+syntax = "proto3";
+package flame.v1;
+service Frontend {
+  rpc ListNodes(ListNodesRequest) returns (NodeList);
+  rpc ListApplications(ListApplicationsRequest) returns (ApplicationList);
+  rpc ListSessions(ListSessionsRequest) returns (SessionList);
+  rpc ListExecutors(ListExecutorsRequest) returns (ExecutorList);
+  rpc ListTasks(ListTasksRequest) returns (TaskList);
+  rpc GetSession(GetSessionRequest) returns (Session);
+  rpc CloseSession(CloseSessionRequest) returns (Session);
+  rpc SuspendSession(SuspendSessionRequest) returns (Session);
+  rpc ResumeSession(ResumeSessionRequest) returns (Session);
+  rpc DeleteSession(DeleteSessionRequest) returns (Session);
+}
+message Paging {
+  int32 limit = 1;
+  int64 number = 2;
+  optional uint64 total = 3;
+}
+message ListApplicationsRequest {
+  optional ApplicationState state = 1;
+  Paging paging = 2;
+  repeated string names = 3;
+}
+message ListSessionsRequest {
+  optional string application = 1;
+  optional SessionState state = 2;
+  repeated string ids = 3;
+  Paging paging = 4;
+}
+message ListNodesRequest {
+  Paging paging = 1;
+  repeated string names = 2;
+  optional NodeState state = 3;
+}
+message ListExecutorsRequest {
+  Paging paging = 1;
+  repeated string ids = 2;
+  optional string node = 3;
+  optional string application = 4;
+  optional string session_id = 5;
+  optional ExecutorState state = 6;
+}
+message ListTasksRequest {
+  string session_id = 1;
+  Paging paging = 2;
+  repeated int64 ids = 3;
+  repeated TaskState states = 4;
+}
+message TaskList {
+  repeated Task tasks = 1;
+  Paging paging = 2;
+}
+message Metadata {
+  string id = 1;
+  string name = 2;
+}
+
+enum SessionState {
+  Open = 0;
+  Closed = 1;
+  Suspending = 2;
+  Suspended = 3;
+}
+
+message SessionStatus {
+  SessionState state = 1;
+
+  int64 creation_time = 2;
+  optional int64 completion_time = 3;
+
+  int32 pending = 4;
+  int32 running = 5;
+  int32 succeed = 6;
+  int32 failed = 7;
+  int32 cancelled = 9;
+
+  repeated Event events = 8;
+}
+
+message SessionSpec {
+  string application = 2;
+  // Field number 3 (slots) reserved — removed in slots-cleanup refactor; do not reuse.
+  reserved 3;
+  reserved "slots";
+  uint32 min_instances = 5;  // Minimum number of instances (default: 0)
+  optional uint32 max_instances = 6;  // Maximum number of instances (null means unlimited)
+  uint32 batch_size = 7;  // Gang size: bind the session only once it holds this many executors (0 is treated as 1)
+  uint32 priority = 8;  // Session priority (default: 0 = lowest)
+  optional ResourceRequirement resreq = 9;  // Explicit resource request; if absent, server applies cluster default
+}
+
+message Session {
+  Metadata metadata = 1;
+  SessionSpec spec = 2;
+  SessionStatus status = 3;
+}
+
+enum TaskState {
+  Pending = 0;
+  Running = 1;
+  Succeed = 2;
+  Failed = 3;
+  Cancelled = 4;
+}
+
+message TaskStatus {
+  TaskState state = 1;
+
+  int64 creation_time = 2;
+  optional int64 completion_time = 3;
+  repeated Event events = 4;
+}
+
+message TaskSpec { string session_id = 2; }
+
+message Task {
+  Metadata metadata = 1;
+  TaskSpec spec = 2;
+  TaskStatus status = 3;
+}
+
+enum Shim {
+  Host = 0;
+  Wasm = 1;
+  // Value 2 is intentionally left available for RFE522 Sidecar.
+  Cri = 3;
+}
+
+enum ApplicationState {
+  Enabled = 0;
+  Disabled = 1;
+}
+
+message ApplicationStatus {
+  ApplicationState state = 1;
+
+  int64 creation_time = 2;
+}
+
+message ApplicationSchema {
+  optional string input = 1;
+  optional string output = 2;
+  optional string common_data = 3;
+}
+
+message ApplicationSpec {
+  Shim shim = 1;  // Required shim type, defaults to Host
+  optional string description = 2;
+  repeated string labels = 3;
+  optional string image = 4;
+  optional string command = 5;
+  repeated string arguments = 6;
+  optional string working_directory = 8;
+  optional uint32 max_instances = 9;
+  optional int64 delay_release = 10;
+  optional ApplicationSchema schema = 11;
+  optional string url = 12;
+  optional string installer = 13;
+}
+
+message Application {
+  Metadata metadata = 1;
+  ApplicationSpec spec = 2;
+  ApplicationStatus status = 3;
+}
+
+message ExecutorSpec {
+  string node = 1;
+  ResourceRequirement resreq = 2;
+  // Field number 3 (slots) reserved — removed in slots-cleanup refactor; do not reuse.
+  reserved 3;
+  reserved "slots";
+  Shim shim = 4;  // Supported shim type reported by executor
+  string application = 5;
+}
+
+enum ExecutorState {
+  ExecutorUnknown = 0;
+  ExecutorVoid = 1;
+  ExecutorIdle = 2;
+  ExecutorBinding = 3;
+  ExecutorBound = 4;
+  ExecutorUnbinding = 5;
+  ExecutorReleasing = 6;
+  ExecutorReleased = 7;
+}
+
+message ExecutorStatus {
+  ExecutorState state = 1;
+  optional string session_id = 2;
+}
+
+message Executor {
+  Metadata metadata = 1;
+  ExecutorSpec spec = 2;
+  ExecutorStatus status = 3;
+}
+
+message ExecutorList {
+  repeated Executor executors = 1;
+  Paging paging = 2;
+}
+
+message SessionList {
+  repeated Session sessions = 1;
+  Paging paging = 2;
+}
+
+message ApplicationList {
+  repeated Application applications = 1;
+  Paging paging = 2;
+}
+
+message ResourceRequirement {
+  uint64 cpu = 1;
+  uint64 memory = 2;
+  int32 gpu = 3;
+}
+
+message NodeSpec {
+  string hostname = 1;
+  repeated Shim shims = 2;  // Shims the node's executor manager runs
+}
+
+enum NodeState {
+  Unknown = 0;
+  Ready = 1;
+  NotReady = 2;
+}
+
+message NodeInfo {
+  string arch = 1;
+  string os = 2;
+  string kernel_version = 3;
+  string os_image = 4;
+  repeated NodeNetworkInterface network_interfaces = 5;
+  repeated NodePciDevice pci_devices = 6;
+}
+
+message NodeNetworkInterface {
+  string name = 1;
+  uint32 index = 2;
+  string mac_address = 3;
+  repeated string addresses = 4; // IPv4/IPv6 addresses with CIDR prefixes when available.
+  uint32 mtu = 5; // Zero when unavailable.
+  string state = 6;
+  string pci_address = 7; // Empty for virtual/non-PCI interfaces.
+}
+
+message NodePciDevice {
+  string address = 1; // Domain:bus:device.function.
+  string vendor_id = 2;
+  string device_id = 3;
+  string class_id = 4;
+  string driver = 5;
+  optional int32 numa_node = 6; // Absent when unknown or not applicable.
+}
+
+message NodeAddress {
+  string type = 1;    // e.g., "InternalIP", "ExternalIP", "Hostname"
+  string address = 2;
+}
+
+message NodeStatus {
+  NodeState state = 1;
+  ResourceRequirement capacity = 2;
+  ResourceRequirement allocatable = 3;
+  NodeInfo info = 4;
+  repeated NodeAddress addresses = 5;
+  int64 last_heartbeat_time = 6;  // Unix epoch seconds
+}
+
+message Node {
+  Metadata metadata = 1;
+  NodeSpec spec = 2;
+  NodeStatus status = 3;
+}
+
+message NodeList {
+  repeated Node nodes = 1;
+  Paging paging = 2;
+}
+
+message Event {
+  int32 code = 1;
+  optional string message = 2;
+  int64 creation_time = 3;  // Unix timestamp in milliseconds
+}
+
+// Lifecycle actions forward only the existing session identity.
+message CloseSessionRequest { string session_id = 1; }
+message SuspendSessionRequest { string session_id = 1; }
+message ResumeSessionRequest { string session_id = 1; }
+message DeleteSessionRequest { string session_id = 1; }
+message GetSessionRequest { string session_id = 1; }

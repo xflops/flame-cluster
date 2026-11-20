@@ -1,0 +1,30 @@
+[package]
+name = "flame-operator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+default-run = "flame-operator"
+
+[dependencies]
+axum = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+flame-api.workspace = true
+base64 = "0.22"
+serde.workspace = true
+serde_yaml.workspace = true
+futures.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

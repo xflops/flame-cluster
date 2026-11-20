@@ -1,0 +1,23 @@
+apiVersion: flame.xflops.io/v1alpha1
+kind: FlameCluster
+metadata:
+  name: flame
+  namespace: flame-system
+spec:
+  # SRE selects the release/image and provides the dependencies below.
+  version: latest
+  endpoint: 192.168.10.10:30080
+  kubernetesEndpoint: https://192.168.10.10:6443
+  image: docker.io/xflops/flame-session-manager:latest
+  nodePort: 30080
+  storageSize: 20Gi
+  gateway:
+    hostname: flame.example.com
+    sessionPort: 30443
+    cachePort: 31443
+    className: flame-envoy
+    envoyNamespace: envoy-gateway-system
+    issuerName: flame-client-ca
+    clientAuth: true
+  # Optional SRE-managed caches in addition to healthy FlameWorker caches.
+  cacheEndpoints: []

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo run --locked -p flame-api --bin crdgen -- flame > "${TMPDIR:-/tmp}/flameclusters.yaml"
+diff -u charts/flame-operator/crds/flameclusters.yaml "${TMPDIR:-/tmp}/flameclusters.yaml"
+cargo run --locked -p flame-api --bin crdgen -- worker > "${TMPDIR:-/tmp}/flameworkers.yaml"
+diff -u charts/flame-operator/crds/flameworkers.yaml "${TMPDIR:-/tmp}/flameworkers.yaml"
+helm lint charts/flame-operator
+helm lint charts/flame-console --set flame.endpoint=https://flame-session-manager:8080 --set flame.tls.caConfigMap=flame-client-ca
+helm lint charts/flame-ui
+helm lint charts/flame-worker --set address=192.168.1.10
+helm lint charts/flame-cluster --set gateway.hostname=flame.example.test
+for script in ci/*.sh; do bash -n "$script"; done
+
+python3 -m py_compile ci/flamepy-app.py
+python3 ci/tests/test_setup.py
+python3 ci/tests/test_publish_release.py

@@ -13,9 +13,10 @@ default), and a ready ClusterIssuer (`flame-client-ca`). The management namespac
 must contain a ConfigMap named for every configured issuer, with its public
 CA PEM in `data["ca.crt"]`. Private CA keys remain with the issuer.
 
-Worker hosts need Linux/systemd, Python 3, and prepared workload runtimes,
-networking, and storage. Flmlet installs FEM itself, then configures and starts
-it. SREs provide and secure CRI/CNI when using the default CRI shim.
+Worker hosts need Linux/systemd, Python 3, logrotate, and prepared workload
+runtimes, networking, and storage. Flmlet uses upstream setup to install FEM
+and its systemd units, then writes configuration and restarts FEM. SREs provide
+and secure CRI/CNI when using the default CRI shim.
 
 ## Install
 
@@ -171,11 +172,16 @@ HTTPS Service proxy for a durable worker-scoped identity. Re-enrollment also
 requires the host's private enrollment key. The namespace in the token selects
 the Flame; explicit worker namespace/name checks reject mismatches.
 
-Flmlet first installs FEM through the upstream checksum-verified package's
-bundled `setup.sh --join --no-systemd`, then writes cluster configuration, then
-starts FEM. Installer failure cannot start FEM with an unconfigured runtime.
-`--check` remains read-only. `--configure` installs and writes configuration
-without starting services; normal reconciliation starts services afterward.
+Flmlet installs FEM through the upstream checksum-verified package's bundled
+`setup.sh --join`, with systemd installation enabled. It uses the upstream
+`FLAME_SYSTEMCTL` hook to defer service activation until installation finishes.
+Flmlet then writes `PREFIX/conf/flame-cluster.yaml` and restarts the requested
+services with that configuration. It preserves the upstream unit definitions,
+escaping literal percent signs in installation paths when needed, and manages
+worker-specific overrides in systemd drop-ins.
+The object cache is stopped and disabled when it is not requested.
+`--check` remains read-only. `--configure` performs installation, configuration,
+and the required service restart before returning.
 
 A pinned version mismatch installs the selected runtime before reconfiguration.
 `latest` installs a missing runtime but does not poll for newer releases.

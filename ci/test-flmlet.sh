@@ -36,10 +36,10 @@ wait_worker_ready "$runtime/flmlet-before.json"
 before_fem="$(worker_pid flame-executor-manager.service)"
 before_cache="$(worker_pid flame-object-cache.service)"
 [[ "$before_fem" -gt 0 && "$before_cache" -gt 0 ]]
-worker_exec sha256sum /usr/local/flame/conf/flmlet/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-before.txt"
+worker_exec sha256sum /usr/local/flame/conf/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-before.txt"
 worker_once --check > "$runtime/flmlet-preview.json"
 worker_once --once > "$runtime/flmlet-once.log" 2>&1
-worker_exec sha256sum /usr/local/flame/conf/flmlet/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-after.txt"
+worker_exec sha256sum /usr/local/flame/conf/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-after.txt"
 cmp "$runtime/flmlet-config-before.txt" "$runtime/flmlet-config-after.txt"
 [[ "$(worker_pid flame-executor-manager.service)" == "$before_fem" ]]
 [[ "$(worker_pid flame-object-cache.service)" == "$before_cache" ]]
@@ -117,7 +117,7 @@ worker_exec systemctl is-enabled --quiet flame-object-cache.service
 wait_stopped
 wait_credentials_removed "$uid"
 worker_exec systemctl is-active --quiet flmlet.service
-worker_exec test -s /usr/local/flame/conf/flmlet/flame-cluster.yaml
+worker_exec test -s /usr/local/flame/conf/flame-cluster.yaml
 python3 - "$runtime" "$before_fem" "$after_fem" "$before_cache" "$after_cache" <<'PY'
 import json,sys
 from pathlib import Path

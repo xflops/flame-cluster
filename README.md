@@ -34,11 +34,11 @@ is optional. SREs prepare the dependencies described below. The operator generat
 a cluster join token and renews it every 15 minutes. Open the UI at `/`, select
 a namespace in the selector, open **Settings**, and copy the **Join a node** command. Run it on the prepared worker
 host with `setup.sh` available; no `kubectl` token lookup is needed. Flmlet runs
-upstream `flame/setup.sh --join` with service startup suppressed, prepares the
-cluster config, and starts FEM only after configuration succeeds.
+upstream `flame/setup.sh --join` to install FEM and its systemd units, then writes
+the cluster config and restarts FEM with that configuration.
 
 The installer creates the FlameWorker and generates
-`conf/flmlet/flame-cluster.yaml` for FEM. No worker CR is needed in advance.
+`conf/flame-cluster.yaml` for FEM. No worker CR is needed in advance.
 Joined workers keep their own credentials when the join token renews.
 See [deployment](docs/deployment.md) for host prerequisites and options.
 

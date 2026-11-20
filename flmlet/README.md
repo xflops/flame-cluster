@@ -2,9 +2,11 @@
 
 `flmlet` reconciles one namespaced `FlameWorker` on an existing Linux systemd host.
 SREs prepare workload runtimes, networking, and storage. Flmlet first installs
-FEM through upstream `flame/setup.sh --join --no-systemd`, then prepares its
-cluster configuration, and finally starts FEM and the optional paired object
-cache. The upstream installer never starts services during this bootstrap.
+FEM through upstream `flame/setup.sh --join`, including its systemd units.
+Flmlet defers service activation through the upstream `FLAME_SYSTEMCTL` hook,
+then writes the cluster configuration and restarts FEM and the optional paired
+object cache using systemctl. It stops and disables the object cache when it is
+not requested.
 Flmlet does not poll registries, install Kubernetes, or request Kubernetes CSRs.
 
 The operator renews a cluster join token every fifteen minutes. Copy the current
@@ -50,18 +52,20 @@ intentionally disabled/absent and cleanup completes). `--check` reads current
 resources and performs read-only host preflight, validating identity, trust,
 and file/unit ownership before printing the desired configuration. A missing
 runtime can be installed later; `--check` performs no installation.
-The installer's `--configure` phase installs the runtime if needed, then writes
-configuration and owned units without starting services. Normal daemon
-reconciliation starts FEM only after those steps succeed.
+The installer's `--configure` phase installs the runtime and upstream systemd
+units if needed, then writes configuration and restarts the requested services.
+Flmlet preserves upstream unit definitions, correcting literal percent escaping
+in installation paths when needed, and writes worker-specific settings in
+`<unit>.d/flmlet.conf` drop-ins.
 
 Only `flame-executor-manager.service` and the optional
-`flame-object-cache.service` are managed. Their ownership headers identify the
-local namespace and worker. Foreign units or generated configuration are refused
+`flame-object-cache.service` are managed. Their drop-in ownership headers
+identify the local namespace and worker. Foreign units or generated configuration are refused
 unless `--adopt-existing` explicitly authorizes adoption. This flag is intended
 for an SRE-controlled cutover and must not be set by tenants.
 
 Private configuration is written atomically under `PREFIX/conf` as
-`flmlet/flame-cluster.yaml`, `flmlet-client.yaml`, and `flmlet.env`. Reconciliation
+`flame-cluster.yaml`, `flmlet-client.yaml`, and `flmlet.env`. Reconciliation
 updates services only when configuration, selected binary version, or worker
 `rolloutRevision` changes; it checks live service state and starts inactive
 managed services every cycle. Other package configuration is retained. The
@@ -83,7 +87,7 @@ cache TLS; SREs must restrict that network separately.
 
 A pinned cluster version must match local `PREFIX/VERSION` or the installed
 FEM's `--version`; a mismatch installs the selected version before configuration
-and service startup. `latest` installs a missing runtime and otherwise retains
+and service restart. `latest` installs a missing runtime and otherwise retains
 the existing runtime without looking for updates.
 Readiness requires active services, the actual hostname Ready in FLM node
 inventory, and TCP cache readiness when FOC is managed. Heartbeats and the

@@ -93,6 +93,9 @@ impl Settings {
     fn unit_path(&self, unit: &str) -> PathBuf {
         self.systemd_dir.join(unit)
     }
+    fn drop_in_path(&self, unit: &str) -> PathBuf {
+        self.systemd_dir.join(format!("{unit}.d/flmlet.conf"))
+    }
     fn conf(&self, name: &str) -> PathBuf {
         self.prefix.join("conf").join(name)
     }
@@ -110,6 +113,7 @@ pub struct CommandOutput {
 /// The only host effects, substituted by an in-memory host in unit tests.
 pub trait Host {
     fn read(&mut self, path: &Path) -> Result<Option<Vec<u8>>>;
+    fn read_dir(&mut self, path: &Path) -> Result<Vec<PathBuf>>;
     fn write_atomic(&mut self, path: &Path, bytes: &[u8], mode: u32) -> Result<()>;
     fn executable(&mut self, path: &Path) -> bool;
     fn command(&mut self, program: &Path, args: &[String]) -> Result<CommandOutput>;
@@ -259,7 +263,7 @@ pub fn desired(
     let files = BTreeMap::from([
         (ca_path, settings.header() + ca.trim() + "\n"),
         (
-            settings.conf("flmlet/flame-cluster.yaml"),
+            settings.conf("flame-cluster.yaml"),
             settings.header() + &configuration,
         ),
         (
@@ -273,11 +277,8 @@ pub fn desired(
     ]);
     let mut units = BTreeMap::new();
     for (unit, binary) in [(FEM, "flame-executor-manager"), (FOC, "flame-object-cache")] {
-        if unit == FOC && !spec.manage_object_cache {
-            continue;
-        }
         let contents = format!(
-            "{}[Unit]\nDescription=Flame host service managed by flmlet\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile={}\nWorkingDirectory={}\nExecStart={} --config {}\nRestart=on-failure\nRestartSec=5s\nTimeoutStopSec=60s\nLimitNOFILE=65536\n\n[Install]\nWantedBy=multi-user.target\n",
+            "{}[Service]\nEnvironmentFile={}\nWorkingDirectory={}\nExecStart=\nExecStart={} --config {}\nStandardOutput=append:{}\nStandardError=append:{}\n",
             settings.header(),
             systemd_value(&settings.conf("flmlet.env"), SystemdPath::Directive)?,
             systemd_value(&settings.prefix, SystemdPath::Directive)?,
@@ -285,9 +286,20 @@ pub fn desired(
                 &settings.prefix.join("bin").join(binary),
                 SystemdPath::Executable
             )?,
+            systemd_value(&settings.conf("flame-cluster.yaml"), SystemdPath::Argument)?,
             systemd_value(
-                &settings.conf("flmlet/flame-cluster.yaml"),
-                SystemdPath::Argument
+                &settings
+                    .prefix
+                    .join("logs")
+                    .join(if unit == FEM { "fem.log" } else { "foc.log" }),
+                SystemdPath::Directive
+            )?,
+            systemd_value(
+                &settings
+                    .prefix
+                    .join("logs")
+                    .join(if unit == FEM { "fem.log" } else { "foc.log" }),
+                SystemdPath::Directive
             )?
         );
         units.insert(unit.into(), contents);
@@ -362,15 +374,21 @@ fn ensure_active(host: &mut impl Host, unit: &str) -> Result<HostServiceStatus> 
 }
 
 /// Stop only the local worker's units. Foreign services/configuration are retained.
+fn owns_unit(host: &mut impl Host, settings: &Settings, unit: &str) -> Result<bool> {
+    Ok(host
+        .read(&settings.drop_in_path(unit))?
+        .is_some_and(|bytes| settings.owns(&bytes))
+        || host
+            .read(&settings.unit_path(unit))?
+            .is_some_and(|bytes| settings.owns(&bytes)))
+}
+
 pub fn stop_owned(host: &mut impl Host, settings: &Settings) -> Result<bool> {
     settings.validate()?;
     let mut changed = false;
     let mut owned = false;
     for unit in [FEM, FOC] {
-        if host
-            .read(&settings.unit_path(unit))?
-            .is_some_and(|bytes| settings.owns(&bytes))
-        {
+        if owns_unit(host, settings, unit)? {
             owned = true;
             let state = service(host, unit);
             if !matches!(state.active_state.as_str(), "inactive" | "failed") {
@@ -392,12 +410,6 @@ pub fn stop_owned(host: &mut impl Host, settings: &Settings) -> Result<bool> {
 }
 
 fn installed_version(host: &mut impl Host, settings: &Settings) -> Result<Option<String>> {
-    if let Some(bytes) = host.read(&settings.prefix.join("VERSION"))? {
-        let value = String::from_utf8_lossy(&bytes).trim().to_string();
-        if !value.is_empty() {
-            return Ok(Some(value));
-        }
-    }
     if !host.executable(&settings.prefix.join("bin/flame-executor-manager")) {
         return Ok(None);
     }
@@ -406,7 +418,7 @@ fn installed_version(host: &mut impl Host, settings: &Settings) -> Result<Option
         &settings.prefix.join("bin/flame-executor-manager"),
         &["--version"],
     )?;
-    Ok(result
+    let binary_version = result
         .success
         .then(|| {
             result
@@ -416,7 +428,16 @@ fn installed_version(host: &mut impl Host, settings: &Settings) -> Result<Option
                 .unwrap_or_default()
                 .to_string()
         })
-        .filter(|value| !value.is_empty()))
+        .filter(|value| !value.is_empty());
+    if binary_version.is_some() {
+        return Ok(binary_version);
+    }
+    Ok(host
+        .read(&settings.prefix.join("VERSION"))?
+        .and_then(|bytes| {
+            let value = String::from_utf8_lossy(&bytes).trim().to_string();
+            (!value.is_empty()).then_some(value)
+        }))
 }
 fn version_matches(selected: &str, installed: Option<&str>) -> bool {
     selected == "latest"
@@ -541,16 +562,169 @@ fn conditions(
         .collect()
 }
 
+fn bootstrap_identity(settings: &Settings, worker: &FlameWorker, desired: &Desired) -> Value {
+    json!({"worker":settings.worker,"namespace":settings.namespace,"prefix":settings.prefix,"systemdDir":settings.systemd_dir,
+        "version":desired.version,"python":worker.spec.python_version})
+}
+
+enum BootstrapPhase {
+    Installing,
+    Configuring,
+}
+
+fn bootstrap_phase(
+    host: &mut impl Host,
+    settings: &Settings,
+    worker: &FlameWorker,
+    desired: &Desired,
+) -> Result<Option<BootstrapPhase>> {
+    let Some(bytes) = host.read(&settings.conf("flmlet/bootstrap.json"))? else {
+        return Ok(None);
+    };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let Some(data) = bytes.strip_prefix(settings.header().as_bytes()) else {
+        if settings.adopt_existing {
+            return Ok(None);
+        }
+        return Err(Error::Invalid(
+            "refusing a foreign runtime bootstrap marker".into(),
+        ));
+    };
+    let mut identity: Value = match serde_json::from_slice(data) {
+        Ok(identity) => identity,
+        Err(_) if settings.adopt_existing => return Ok(None),
+        Err(_) => return Err(Error::Invalid("invalid runtime bootstrap marker".into())),
+    };
+    let phase = identity
+        .as_object_mut()
+        .and_then(|object| object.remove("phase"));
+    if identity != bootstrap_identity(settings, worker, desired) {
+        return Ok(None);
+    }
+    match phase.as_ref().and_then(Value::as_str) {
+        None if phase.is_none() => Ok(Some(BootstrapPhase::Installing)),
+        Some("installing") => Ok(Some(BootstrapPhase::Installing)),
+        Some("configuring") => Ok(Some(BootstrapPhase::Configuring)),
+        _ if settings.adopt_existing => Ok(None),
+        _ => Err(Error::Invalid("invalid runtime bootstrap phase".into())),
+    }
+}
+
+fn bootstrap_recovery(
+    host: &mut impl Host,
+    settings: &Settings,
+    worker: &FlameWorker,
+    desired: &Desired,
+) -> Result<bool> {
+    Ok(bootstrap_phase(host, settings, worker, desired)?.is_some())
+}
+
+fn write_bootstrap_marker(
+    host: &mut impl Host,
+    settings: &Settings,
+    worker: &FlameWorker,
+    desired: &Desired,
+    phase: BootstrapPhase,
+) -> Result<()> {
+    let mut identity = bootstrap_identity(settings, worker, desired);
+    identity["phase"] = json!(match phase {
+        BootstrapPhase::Installing => "installing",
+        BootstrapPhase::Configuring => "configuring",
+    });
+    let marker = settings.header() + &serde_json::to_string(&identity)?;
+    host.write_atomic(
+        &settings.conf("flmlet/bootstrap.json"),
+        marker.as_bytes(),
+        0o600,
+    )
+}
+
+fn upstream_exec_start(unit: &str, prefix: &str) -> String {
+    let binary = unit.strip_suffix(".service").unwrap_or(unit);
+    format!("ExecStart={prefix}/bin/{binary} --config {prefix}/conf/flame-cluster.yaml\n")
+}
+
+fn upstream_unit(settings: &Settings, unit: &str, bytes: &[u8]) -> bool {
+    let prefix = settings.prefix.to_string_lossy();
+    let text = String::from_utf8_lossy(bytes);
+    text.contains("Documentation=https://github.com/xflops-io/flame\n")
+        && (text.contains(&upstream_exec_start(unit, &prefix))
+            || text.contains(&upstream_exec_start(unit, &prefix.replace('%', "%%"))))
+}
+
+fn normalize_upstream_units(host: &mut impl Host, settings: &Settings) -> Result<()> {
+    let prefix = settings.prefix.to_string_lossy();
+    if !prefix.contains('%') {
+        return Ok(());
+    }
+    let escaped = prefix.replace('%', "%%");
+    for unit in [FEM, FOC] {
+        let path = settings.unit_path(unit);
+        let bytes = host
+            .read(&path)?
+            .ok_or_else(|| Error::Invalid(format!("upstream installer did not provide {unit}")))?;
+        if !upstream_unit(settings, unit, &bytes) {
+            return Err(Error::Invalid(format!(
+                "refusing to normalize an unexpected upstream unit {unit}"
+            )));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| Error::Invalid(format!("upstream unit {unit} is not UTF-8")))?;
+        if text.contains(&upstream_exec_start(unit, &prefix)) {
+            // The vendor unit has unescaped prefix paths. Preserve its definitions
+            // while preventing systemd from expanding literal prefix percent signs.
+            host.write_atomic(
+                &path,
+                text.replace(prefix.as_ref(), &escaped).as_bytes(),
+                0o644,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_host(
     host: &mut impl Host,
     settings: &Settings,
-    _worker: &FlameWorker,
+    worker: &FlameWorker,
     desired: &Desired,
 ) -> Result<Option<String>> {
+    let recovering = bootstrap_recovery(host, settings, worker, desired)?;
+    let legacy_owned = host
+        .read(&settings.unit_path(FEM))?
+        .is_some_and(|bytes| settings.owns(&bytes))
+        && host
+            .read(&settings.conf("flmlet/flame-cluster.yaml"))?
+            .is_some_and(|bytes| settings.owns(&bytes));
     // Check every unit before making any file or service changes.
     for unit in desired.units.keys() {
+        for path in host.read_dir(&settings.systemd_dir.join(format!("{unit}.d")))? {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "conf")
+                && host
+                    .read(&path)?
+                    .is_some_and(|bytes| !settings.owns(&bytes))
+                && !settings.adopt_existing
+            {
+                return Err(Error::Invalid(format!(
+                    "refusing foreign drop-in {}; use --adopt-existing explicitly",
+                    path.display()
+                )));
+            }
+        }
+        let drop_in = host.read(&settings.drop_in_path(unit))?;
+        if drop_in.as_ref().is_some_and(|bytes| !settings.owns(bytes)) && !settings.adopt_existing {
+            return Err(Error::Invalid(format!(
+                "refusing foreign drop-in for {unit}; use --adopt-existing explicitly"
+            )));
+        }
         if let Some(bytes) = host.read(&settings.unit_path(unit))?
             && !settings.owns(&bytes)
+            && !drop_in.as_ref().is_some_and(|bytes| settings.owns(bytes))
+            && !(recovering && upstream_unit(settings, unit, &bytes))
             && !settings.adopt_existing
         {
             return Err(Error::Invalid(format!(
@@ -561,6 +735,11 @@ fn validate_host(
     for path in desired.files.keys() {
         if let Some(bytes) = host.read(path)?
             && !settings.owns(&bytes)
+            && !((recovering || legacy_owned)
+                && path == &settings.conf("flame-cluster.yaml")
+                && bytes.starts_with(
+                    b"# Flame cluster configuration, generated by setup.sh from FLAME_* settings\n",
+                ))
             && !settings.adopt_existing
         {
             return Err(Error::Invalid(format!(
@@ -572,16 +751,24 @@ fn validate_host(
     installed_version(host, settings)
 }
 
-fn runtime_missing(host: &mut impl Host, settings: &Settings, worker: &FlameWorker) -> bool {
-    ["flame-executor-manager", "flmctl"]
+fn runtime_missing(host: &mut impl Host, settings: &Settings, _worker: &FlameWorker) -> bool {
+    ["flame-executor-manager", "flmctl", "flame-object-cache"]
         .into_iter()
-        .chain(
-            worker
-                .spec
-                .manage_object_cache
-                .then_some("flame-object-cache"),
-        )
         .any(|binary| !host.executable(&settings.prefix.join("bin").join(binary)))
+}
+
+fn systemd_installation_needed(host: &mut impl Host, settings: &Settings) -> Result<bool> {
+    for unit in [FEM, FOC] {
+        let base = host.read(&settings.unit_path(unit))?;
+        let drop_in = host.read(&settings.drop_in_path(unit))?;
+        if base.is_none()
+            || base.as_ref().is_some_and(|bytes| settings.owns(bytes))
+            || !drop_in.as_ref().is_some_and(|bytes| settings.owns(bytes))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn bootstrap_needed(
@@ -591,22 +778,26 @@ fn bootstrap_needed(
     desired: &Desired,
     version: Option<&str>,
 ) -> Result<bool> {
-    let needed =
-        runtime_missing(host, settings, worker) || !version_matches(&desired.version, version);
+    let needed = runtime_missing(host, settings, worker)
+        || !version_matches(&desired.version, version)
+        || systemd_installation_needed(host, settings)?
+        || matches!(
+            bootstrap_phase(host, settings, worker, desired)?,
+            Some(BootstrapPhase::Installing)
+        );
     if needed {
         let existing = ["flame-executor-manager", "flmctl", "flame-object-cache"]
             .iter()
             .any(|binary| host.executable(&settings.prefix.join("bin").join(binary)));
-        let owned = host
-            .read(&settings.unit_path(FEM))?
-            .is_some_and(|bytes| settings.owns(&bytes));
+        let owned =
+            owns_unit(host, settings, FEM)? || bootstrap_recovery(host, settings, worker, desired)?;
         if existing && !owned && !settings.adopt_existing {
             return Err(Error::Invalid(
                 "refusing to replace an unowned Flame runtime; use --adopt-existing explicitly"
                     .into(),
             ));
         }
-        for tool in ["curl", "sh", "tar"] {
+        for tool in ["curl", "sh", "tar", "logrotate", "systemctl", "env"] {
             if !host.executable(Path::new(tool)) {
                 return Err(Error::Invalid(format!("runtime bootstrap requires {tool}")));
             }
@@ -625,21 +816,29 @@ fn ensure_runtime(
     if bootstrap_needed(host, settings, worker, desired, version.as_deref())? {
         let force = ["flame-executor-manager", "flmctl", "flame-object-cache"]
             .iter()
-            .any(|binary| host.executable(&settings.prefix.join("bin").join(binary)));
+            .any(|binary| host.executable(&settings.prefix.join("bin").join(binary)))
+            || host.read(&settings.conf("flame-cluster.yaml"))?.is_some()
+            || host.read(&settings.unit_path(FEM))?.is_some()
+            || host.read(&settings.unit_path(FOC))?.is_some();
+        write_bootstrap_marker(host, settings, worker, desired, BootstrapPhase::Installing)?;
         host.bootstrap(
             settings,
             &desired.version,
             &worker.spec.python_version,
             force,
         )?;
+        normalize_upstream_units(host, settings)?;
         let installed = installed_version(host, settings)?;
         if runtime_missing(host, settings, worker)
             || !version_matches(&desired.version, installed.as_deref())
+            || host.read(&settings.unit_path(FEM))?.is_none()
+            || host.read(&settings.unit_path(FOC))?.is_none()
         {
             return Err(Error::Invalid(
-                "Flame installer did not provide the selected runtime".into(),
+                "Flame installer did not provide the selected runtime and systemd units".into(),
             ));
         }
+        write_bootstrap_marker(host, settings, worker, desired, BootstrapPhase::Configuring)?;
         return Ok((installed, true));
     }
     Ok((version, false))
@@ -672,7 +871,7 @@ fn write_desired(
         }
     }
     for (unit, contents) in &desired.units {
-        let path = settings.unit_path(unit);
+        let path = settings.drop_in_path(unit);
         if force || host.read(&path)?.as_deref() != Some(contents.as_bytes()) {
             host.write_atomic(&path, contents.as_bytes(), 0o644)?;
             changed = true;
@@ -681,7 +880,60 @@ fn write_desired(
     Ok(changed)
 }
 
-/// Installer phase: validate and write local configuration/units without starting services.
+fn apply_configuration(
+    host: &mut impl Host,
+    settings: &Settings,
+    worker: &FlameWorker,
+    desired: &Desired,
+    version: Option<&str>,
+    installed: bool,
+) -> Result<(bool, String)> {
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(
+            &json!({"desired":desired,"installedVersion":version,"manageObjectCache":worker.spec.manage_object_cache})
+        )?)
+    );
+    let applied = settings.conf("flmlet-applied-hash");
+    let mut changed = host.read(&applied)?.as_deref() != Some(hash.as_bytes());
+    changed |= write_desired(host, settings, desired, installed)?;
+    disable_unrequested_cache(host, settings, worker)?;
+    if changed {
+        systemctl(host, &["daemon-reload"])?;
+        for unit in [worker.spec.manage_object_cache.then_some(FOC), Some(FEM)]
+            .into_iter()
+            .flatten()
+        {
+            systemctl(host, &["enable", unit])?;
+            systemctl(host, &["restart", unit])?;
+        }
+        host.write_atomic(&applied, hash.as_bytes(), 0o600)?;
+    }
+    let marker = settings.conf("flmlet/bootstrap.json");
+    if host.read(&marker)?.is_some_and(|bytes| !bytes.is_empty()) {
+        host.write_atomic(&marker, b"", 0o600)?;
+    }
+    Ok((changed, hash))
+}
+
+fn disable_unrequested_cache(
+    host: &mut impl Host,
+    settings: &Settings,
+    worker: &FlameWorker,
+) -> Result<()> {
+    if !worker.spec.manage_object_cache && owns_unit(host, settings, FOC)? {
+        let state = service(host, FOC);
+        if state.active_state != "inactive" {
+            systemctl(host, &["stop", FOC])?;
+        }
+        if command(host, Path::new("systemctl"), &["is-enabled", FOC])?.success {
+            systemctl(host, &["disable", FOC])?;
+        }
+    }
+    Ok(())
+}
+
+/// Install upstream units, then apply worker configuration and restart the selected services.
 pub fn configure(
     host: &mut impl Host,
     settings: &Settings,
@@ -694,12 +946,16 @@ pub fn configure(
         ));
     }
     let desired = preflight(host, settings, worker, cluster)?;
-    let (_, installed) = ensure_runtime(host, settings, worker, &desired)?;
-    let changed = write_desired(host, settings, &desired, installed)?;
-    if changed {
-        host.write_atomic(&settings.conf("flmlet-applied-hash"), b"", 0o600)?;
-    }
-    Ok(changed)
+    let (version, installed) = ensure_runtime(host, settings, worker, &desired)?;
+    apply_configuration(
+        host,
+        settings,
+        worker,
+        &desired,
+        version.as_deref(),
+        installed,
+    )
+    .map(|(changed, _)| changed)
 }
 
 pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) -> Result<Outcome> {
@@ -759,40 +1015,14 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
         Err(error) => return Err(error),
     };
     let (version, installed) = ensure_runtime(host, settings, worker, &desired)?;
-    let hash = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(
-            &json!({"desired":desired,"installedVersion":version})
-        )?)
-    );
-    let applied = settings.conf("flmlet-applied-hash");
-    let previous = host.read(&applied)?;
-    let mut changed = previous.as_deref() != Some(hash.as_bytes());
-    changed |= write_desired(host, settings, &desired, installed)?;
-    if !worker.spec.manage_object_cache
-        && host
-            .read(&settings.unit_path(FOC))?
-            .is_some_and(|bytes| settings.owns(&bytes))
-    {
-        let state = service(host, FOC);
-        if state.active_state != "inactive" {
-            systemctl(host, &["stop", FOC])?;
-        }
-        if command(host, Path::new("systemctl"), &["is-enabled", FOC])?.success {
-            systemctl(host, &["disable", FOC])?;
-        }
-    }
-    if changed {
-        systemctl(host, &["daemon-reload"])?;
-        for unit in [worker.spec.manage_object_cache.then_some(FOC), Some(FEM)]
-            .into_iter()
-            .flatten()
-        {
-            systemctl(host, &["enable", unit])?;
-            systemctl(host, &["restart", unit])?;
-        }
-        host.write_atomic(&applied, hash.as_bytes(), 0o600)?;
-    }
+    let (changed, hash) = apply_configuration(
+        host,
+        settings,
+        worker,
+        &desired,
+        version.as_deref(),
+        installed,
+    )?;
     let object_cache = if worker.spec.manage_object_cache {
         Some(ensure_active(host, FOC)?)
     } else {

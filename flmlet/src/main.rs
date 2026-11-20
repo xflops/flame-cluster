@@ -182,7 +182,7 @@ async fn cycle(cli: &Cli, client: Client) -> Result<bool, Error> {
         })
         .await??;
         println!(
-            "Configured {}/{}; services will be reconciled by the flmlet daemon.",
+            "Configured {}/{}; flmlet manages the selected upstream services.",
             cli.settings.namespace, cli.settings.worker
         );
         return Ok(true);

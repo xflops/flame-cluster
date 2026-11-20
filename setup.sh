@@ -39,8 +39,8 @@ usage: setup.sh [options]
 
 Existing Kubernetes, cert-manager, Envoy Gateway/Gateway API, GatewayClass and
 ClusterIssuer are SRE prerequisites. This script does not install them. Worker
-mode requires Linux/systemd, root, Python 3, and prepared workload runtimes/networking.
-Flmlet installs FEM through upstream Flame setup, writes config, then starts FEM.
+mode requires Linux/systemd, root, Python 3, logrotate, and prepared workload runtimes/networking.
+Flmlet uses upstream Flame setup to install systemd units, writes config, then restarts FEM.
 Inline tokens can appear in process arguments; prefer --token-file on shared hosts.
 USAGE
 }
@@ -265,9 +265,21 @@ from pathlib import Path
 import sys
 
 work = Path(sys.argv[1])
+json_source = 'rendered Kubernetes'
 try:
-    objects = json.loads((work / 'cluster-objects.json').read_text())
-    objects = objects.get('items', [objects])
+    # kubectl create prints one JSON object per YAML document, not a single List.
+    remaining = (work / 'cluster-objects.json').read_text().lstrip()
+    decoder = json.JSONDecoder()
+    objects = []
+    while remaining:
+        obj, end = decoder.raw_decode(remaining)
+        if not isinstance(obj, dict):
+            raise ValueError('rendered Kubernetes object must be a JSON object')
+        entries = obj.get('items') if obj.get('kind') == 'List' else [obj]
+        if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
+            raise ValueError('rendered Kubernetes List must contain JSON objects')
+        objects.extend(entries)
+        remaining = remaining[end:].lstrip()
     namespaces = [obj for obj in objects if obj.get('kind') == 'Namespace']
     declared = {obj['metadata']['name'] for obj in namespaces}
     flames = [obj for obj in objects if obj.get('kind') == 'FlameCluster']
@@ -280,6 +292,7 @@ try:
         issuer = obj['spec']['gateway']['issuerName']
         if ns not in declared or any(c in value for value in (ns, name, issuer) for c in '\t\r\n/'):
             raise ValueError('invalid rendered Flame metadata')
+        json_source = f'SRE public CA trust for issuer {issuer}'
         source = json.loads((work / f'ca-{issuer}.json').read_text())
         ca = source['data']['ca.crt']
         if not isinstance(ca, str) or not ca.strip():
@@ -289,8 +302,12 @@ try:
     (work / 'namespaces.json').write_text(json.dumps({'apiVersion': 'v1', 'kind': 'List', 'items': namespaces}))
     (work / 'public-trust.json').write_text(json.dumps({'apiVersion': 'v1', 'kind': 'List', 'items': trust}))
     (work / 'flames.tsv').write_text(''.join(rows))
-except (ValueError, KeyError, TypeError, OSError):
-    sys.exit('Flame Cluster: invalid rendered namespace configuration or missing SRE public CA trust')
+except json.JSONDecodeError as error:
+    sys.exit(f'Flame Cluster: cannot parse {json_source} JSON: {error.msg} (line {error.lineno}, column {error.colno})')
+except KeyError as error:
+    sys.exit(f'Flame Cluster: rendered namespace configuration or SRE public CA trust is missing field {error.args[0]}')
+except (ValueError, TypeError, OSError) as error:
+    sys.exit(f'Flame Cluster: invalid rendered namespace configuration or SRE public CA trust: {error}')
 PY_NAMESPACES
     # Pre-create the exact Helm-owned namespace metadata and copy public trust only.
     kube apply -f "$work/namespaces.json" >/dev/null

@@ -10,6 +10,33 @@ use std::{
 
 #[derive(Default)]
 pub struct LocalHost;
+
+fn installer_arguments(
+    installer: &Path,
+    settings: &crate::Settings,
+    version: &str,
+    python: &str,
+    force: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        format!("FLAME_SYSTEMD_DIR={}", settings.systemd_dir.display()),
+        "FLAME_SYSTEMCTL=true".into(),
+        "sh".into(),
+        installer.to_string_lossy().into_owned(),
+        "--join".into(),
+        "--prefix".into(),
+        settings.prefix.to_string_lossy().into_owned(),
+        "--python-version".into(),
+        python.into(),
+        "--version".into(),
+        version.into(),
+    ];
+    if force {
+        args.push("--force".into());
+    }
+    args
+}
+
 impl Host for LocalHost {
     fn read(&mut self, path: &Path) -> Result<Option<Vec<u8>>> {
         match std::fs::read(path) {
@@ -17,6 +44,18 @@ impl Host for LocalHost {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+    fn read_dir(&mut self, path: &Path) -> Result<Vec<std::path::PathBuf>> {
+        let directory = match std::fs::read_dir(path) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut paths = directory
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        paths.sort();
+        Ok(paths)
     }
     fn write_atomic(&mut self, path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         let parent = path
@@ -96,20 +135,7 @@ impl Host for LocalHost {
                 .run(Path::new("curl"), &args, Duration::from_secs(195))?
                 .success)
         };
-        let mut args = vec![
-            installer.to_string_lossy().into_owned(),
-            "--join".into(),
-            "--no-systemd".into(),
-            "--prefix".into(),
-            settings.prefix.to_string_lossy().into_owned(),
-            "--python-version".into(),
-            python.into(),
-            "--version".into(),
-            version.into(),
-        ];
-        if force {
-            args.push("--force".into());
-        }
+        let mut args = installer_arguments(&installer, settings, version, python, force);
         {
             // Use the installer bundled in the checksum-verified official release.
             // This also works when the hosted setup.sh endpoint is unavailable.
@@ -158,7 +184,7 @@ impl Host for LocalHost {
             args.extend(["--package".into(), archive.to_string_lossy().into_owned()]);
         }
         if !self
-            .run(Path::new("sh"), &args, Duration::from_secs(1800))?
+            .run(Path::new("env"), &args, Duration::from_secs(1800))?
             .success
         {
             return Err(Error::Command("Flame runtime installation failed".into()));
@@ -253,6 +279,44 @@ impl LocalHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn upstream_installer_enables_systemd_in_the_selected_directory() {
+        let settings = crate::Settings {
+            worker: "worker-one".into(),
+            namespace: "flame-system".into(),
+            prefix: "/srv/flame space%$literal".into(),
+            systemd_dir: "/test/systemd".into(),
+            adopt_existing: false,
+        };
+        let args = installer_arguments(
+            Path::new("/tmp/setup.sh"),
+            &settings,
+            "v0.8.0",
+            "3.12",
+            false,
+        );
+        assert_eq!(args[0], "FLAME_SYSTEMD_DIR=/test/systemd");
+        assert_eq!(args[1], "FLAME_SYSTEMCTL=true");
+        assert_eq!(args[2], "sh");
+        assert!(args.iter().any(|arg| arg == "--join"));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "--no-systemd" || arg == "--force")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--prefix", "/srv/flame space%$literal"])
+        );
+        let forced = installer_arguments(
+            Path::new("/tmp/setup.sh"),
+            &settings,
+            "v0.8.0",
+            "3.12",
+            true,
+        );
+        assert!(forced.iter().any(|arg| arg == "--force"));
+    }
     #[test]
     fn atomic_configuration_replaces_contents_with_private_permissions() {
         let directory = tempfile::tempdir().unwrap();

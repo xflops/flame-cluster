@@ -153,7 +153,7 @@ esac
         envelope = {'namespace': 'flame-system', 'cluster': 'flame', 'serviceNamespace': 'operator-system', 'service': 'flame-operator', 'kubeconfig': json.dumps(config)}
         self.token.write_bytes(base64.b64encode(json.dumps(envelope).encode()))
 
-    def rendered_flames(self, flames):
+    def rendered_flames(self, flames, list_output=False):
         items = []
         for namespace, name, issuer in flames:
             items.extend([
@@ -163,7 +163,9 @@ esac
                 {'apiVersion': 'flame.xflops.io/v1alpha1', 'kind': 'FlameCluster',
                     'metadata': {'name': name, 'namespace': namespace}, 'spec': {'gateway': {'issuerName': issuer}}},
             ])
-        self.cluster_objects.write_text(json.dumps({'apiVersion': 'v1', 'kind': 'List', 'items': items}))
+        # kubectl create -o json prints each YAML document as a separate JSON object.
+        output = json.dumps({'apiVersion': 'v1', 'kind': 'List', 'items': items}) if list_output else '\n'.join(json.dumps(item, indent=2) for item in items)
+        self.cluster_objects.write_text(output)
 
     def run_setup(self, *args, trace=False, **updates):
         environment = self.env | updates
@@ -421,6 +423,31 @@ esac
         self.assertEqual({item['metadata']['namespace'] for item in trust}, {'flame-ns-1', 'custom-ns'})
         self.assertTrue(all(set(item['data']) == {'ca.crt'} for item in trust))
         self.assertNotIn('get secret', operations)
+
+    def test_namespace_preflight_also_accepts_a_kubernetes_list(self):
+        self.rendered_flames([('flame-ns-1', 'flame-1', 'flame-client-ca')], list_output=True)
+        result = self.run_setup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('-n flame-ns-1 wait flamecluster/flame-1 ', self.operations())
+
+    def test_namespace_preflight_reports_malformed_json_without_echoing_contents(self):
+        with self.cluster_objects.open('a') as output:
+            output.write('\n{"kind":"Namespace","data":"MUST-NOT-PRINT-CONTENTS"')
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('cannot parse rendered Kubernetes JSON', result.stderr)
+        self.assertNotIn('MUST-NOT-PRINT-CONTENTS', result.stdout + result.stderr)
+        self.assertNotIn('helm upgrade', self.operations())
+        self.assertFalse(Path(str(self.log) + '.namespaces.json').exists())
+        self.assertFalse(Path(str(self.log) + '.public-trust.json').exists())
+
+    def test_namespace_preflight_reports_missing_managed_objects(self):
+        self.rendered_flames([], list_output=True)
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no managed Flame namespaces were rendered', result.stderr)
+        self.assertNotIn('helm upgrade', self.operations())
+        self.assertFalse(Path(str(self.log) + '.namespaces.json').exists())
 
     def test_missing_public_trust_changes_nothing(self):
         result = self.run_setup(INSTALL_TEST_MISSING_CA='1')

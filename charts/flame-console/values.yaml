@@ -20,6 +20,10 @@ security:
 service:
   type: ClusterIP
   port: 3000
+# Operator-issued <cluster>-join Secret in this namespace. Optional for external FLM.
+# The console reads its rotating token and expiresAt keys only from this mount.
+join:
+  secretName: ""
 # Set this to the direct Flame session-manager endpoint, not Kubernetes.
 flame:
   endpoint: ""

@@ -1,5 +1,6 @@
 mod actions;
 pub mod connection;
+mod join;
 mod listing;
 
 pub mod rpc {
@@ -21,6 +22,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/connection", get(connection))
+        .route("/api/join", get(join::command))
         .route("/api/{resource}", get(listing::resources))
         .route("/api/sessions/{id}/tasks", get(listing::tasks))
         .route("/api/sessions/{id}/actions/{action}", post(actions::action))

@@ -19,7 +19,7 @@ SREs provide:
   Gateway API must serve `BackendTLSPolicy` at `gateway.networking.k8s.io/v1`.
 - A ConfigMap in each FlameCluster namespace named for the configured issuer,
   with the trusted CA PEM under `ca.crt`, for gateway client authentication.
-- Routable Kubernetes node addresses, DNS for the selected gateway hostname,
+- Routable Kubernetes node addresses, DNS when using a gateway DNS hostname,
   and firewall access to the configured NodePorts.
 - Host Flame binaries and any external object-cache endpoints.
 
@@ -33,15 +33,19 @@ it does not install infrastructure or dependency controllers.
 | Chart | Important values |
 | --- | --- |
 | `charts/flame-operator` | `image.repository`, `image.tag`, `serviceAccount`, `rbac.create` |
-| `charts/flame-cluster` | `nameOverride`, `version`, `image`, `rolloutRevision`, `gateway`, `storageClass`, `cacheEndpoints` |
+| `charts/flame-cluster` | `nameOverride`, `version`, `image`, `endpointHost`, `endpoint`, `kubernetesEndpoint`, `nodePort`, `gateway`, `storageClass`, `cacheEndpoints` |
 | `charts/flame-worker` | `clusterRef`, `address`, `endpoint`, `shims`, `maxExecutors`, `pythonVersion`, `manageObjectCache` |
-| `charts/flame-console` | `flame.endpoint` (required), `flame.name`, `flame.tls`, `image` |
+| `charts/flame-console` | `flame.endpoint` (required), `flame.name`, `flame.tls`, `join.secretName`, `image` |
 | `charts/flame-ui` | `consoleUpstream`, `image`, `service` |
 
 Set `fullnameOverride` to change a workload's Service name. Update
 `flame-ui.consoleUpstream` accordingly if the console's Service name changes.
 Use SRE-managed ingress/gateway resources to expose the UI; it serves the console
-at `/`, with no separate dashboard.
+at `/`, opening the configured cluster's Applications page directly. The cluster
+selector contains only the configured cluster, with no aggregate option.
+Navigation is Nodes → Executors → Applications → Sessions → Settings, using
+Compact density throughout. Settings shows connection details and the current
+node join command with a copy button and expiration.
 
 `FlameCluster.spec.version` selects the default session-manager image tag.
 An explicit custom image tag/digest is used unchanged. No controller polls
@@ -61,9 +65,29 @@ can reach those ports on any routable Kubernetes node, including nodes without
 an Envoy pod. The configured `nodeSelector` still controls Envoy pod placement.
 No host networking, host ports, or binding to a particular node IP is required.
 
-SREs map `gateway.hostname` in DNS to their chosen routable node address and
-allow traffic to both NodePorts. The hostname remains the TLS/SNI identity; the
-operator does not resolve it during rendering or reconciliation.
+`sh setup.sh` uses the active kubeconfig server host for both gateway NodePorts
+and its full HTTPS URL for worker enrollment. It needs no hostname flags or
+values file. Session traffic defaults to port `30443`, cache traffic to `31443`,
+and the native worker frontend/backend to `30080`/`30081`. `--kubeconfig FILE`
+selects another kubeconfig; otherwise kubectl's current context is used.
+The installer requires Helm, kubectl, and Python 3, along with the SRE
+prerequisites above. A minimal installation is:
+
+```sh
+curl -fsSLo setup.sh https://xflops.io/cluster/setup.sh
+sh setup.sh
+```
+
+For manual Helm installations, `endpointHost` combines a worker-reachable IPv4
+address with the chart's `nodePort`; an explicit `endpoint` takes precedence.
+Set `kubernetesEndpoint` to enable enrollment. Helm alone does not read kubeconfig
+to populate these values.
+
+An IPv4 gateway uses an IP certificate SAN and routes without DNS hostname
+constraints. A DNS gateway uses its hostname for TLS/SNI; the operator does not
+resolve it during rendering or reconciliation. Allow traffic to the NodePorts.
+`--hostname`, `--endpoint`, and `--kubernetes-endpoint` remain optional overrides.
+Use `--values FILE` only when overriding the default chart configuration.
 `gateway.ingressIp` is optional advertised-address metadata only. It does not
 select an Envoy node or bind an address, and can be omitted when SRE DNS provides
 the mapping.
@@ -94,23 +118,26 @@ Certificate renewal restarts the session manager with the new identity.
 Native client-certificate authentication is future Flame work; network isolation
 and access controls remain necessary.
 
-SREs install Flame binaries and Python on a Linux host with systemd. Set
-`FlameCluster.spec.endpoint` to the worker-reachable frontend `LAN-IP:NodePort`
-and `spec.kubernetesEndpoint` to the externally reachable Kubernetes HTTPS API
-address. The API certificate must validate against the cluster CA. The operator
-does not discover a public Kubernetes endpoint or disable TLS verification.
+SREs install Flame binaries and Python on a Linux host with systemd. Setup
+resolves the kubeconfig server host to an IPv4 address for the native worker
+frontend and combines it with `nodePort` from the default or optional values file.
+The current worker protocol requires an RFC 1918 address. If the kubeconfig
+address is an API-only load balancer, use the optional endpoint overrides for
+worker-reachable node addresses. The Kubernetes API certificate must validate
+against the cluster CA; TLS verification stays enabled.
+
+The generated `<cluster>-client` Secret contains a standalone `flame.yaml` with
+an embedded TLS client certificate and private key for session/cache gateway
+access. Its requested lifetime is one year (`8760h`), with renewal 30 days
+(`720h`) before expiry. The issuer must allow that lifetime. Mounted bundles
+follow renewal; refresh exported copies separately before expiration. This
+client credential is separate from the short-lived node join token below.
 
 The operator issues a cluster join token immediately and renews it every 15
-minutes. It exists before any FlameWorker does. Retrieve the current token and
-run `setup.sh --join <token>` on the host:
-
-```sh
-umask 077
-kubectl -n flame-system get secret flame-join \
-  -o jsonpath='{.data.token}' | base64 --decode > join-token.txt
-# Transfer this private token file to the host, then run there:
-sudo sh setup.sh --join "$(cat join-token.txt)"
-```
+minutes. It exists before any FlameWorker does. Open **Settings → Join a node**
+in the UI, copy the command, and run it on the prepared host with `setup.sh`
+available. Settings shows the token expiration; refresh to obtain the latest
+command before joining. The cluster installer configures this automatically.
 
 The installer registers the host through the operator, creates its FlameWorker,
 and generates `conf/flmlet/flame-cluster.yaml` for FEM. Hostname and LAN address
@@ -129,8 +156,8 @@ Explicit authorization rejection stops its owned services; temporary network
 failures retain the last applied configuration.
 
 An omitted `kubernetesEndpoint` skips enrollment without changing control-plane
-readiness. Wait for the join Secret before exporting it; the Secret also
-records the token's expiration.
+readiness. Settings shows the join command once the operator has issued the
+join Secret.
 
 `flmlet` writes dedicated configuration and manages only its own FEM and optional
 object-cache units. Foreign services require an explicit adoption flag.
@@ -148,14 +175,24 @@ the chart does not create credentials.
 ```sh
 helm upgrade --install flame-console charts/flame-console --namespace flame-system \
   --set flame.endpoint=https://flame.example.com:30443 \
+  --set join.secretName=flame-join \
   --set flame.tls.secretName=flame-console-client \
   --set flame.tls.caKey=ca.crt \
   --set flame.tls.certKey=tls.crt --set flame.tls.keyKey=tls.key
 ```
 
-Only endpoint/display information is exposed through `/api/connection`. Private
-keys and Kubernetes Secret content are never returned. The console has no
-Kubernetes access and does not discover clusters.
+Only endpoint/display information is exposed through `/api/connection`.
+Settings requests `/api/join` to obtain the current join command and expiration.
+The optional `join.secretName` mounts the operator-issued `<cluster>-join` Secret
+from the console namespace, reading its `token` and `expiresAt` keys on each
+request so projected Secret updates take effect without restarting. An absent
+or expired token is unavailable until a current token is projected. Standalone
+console processes can set `FLAME_JOIN_TOKEN_FILE` and `FLAME_JOIN_EXPIRY_FILE`
+to equivalent files. No Kubernetes API client or RBAC is needed.
+
+Serve the UI and API behind your trusted SSO ingress: anyone authorized to read
+Settings can copy the enrollment credential. TLS private keys are never
+returned. The console does not discover clusters.
 
 ## Upgrades and uninstall
 

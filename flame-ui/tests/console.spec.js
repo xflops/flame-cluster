@@ -12,6 +12,9 @@ async function fixture(page, options={}) {
   await page.route('**/api/**',async route=>{
     const url=new URL(route.request().url()),resource=url.pathname.split('/').at(-1);
     if(url.pathname==='/api/connection') return route.fulfill({json:{endpoint:'http://flm:8080',displayName:'Training Flame'}});
+    if(url.pathname==='/api/join') return options.joinFail
+      ? route.fulfill({status:503,json:{error:'Node join is not configured.'}})
+      : route.fulfill({json:{command:"sudo sh setup.sh --join 'current-token'",expiresAt:new Date(Date.now()+(options.joinExpired ? -60000 : 900000)).toISOString()}});
     if(route.request().method()==='POST') {
       if(options.actionFail) return route.fulfill({status:409,json:{error:'Session state changed. Refresh and retry.'}});
       if(resource==='delete') data.sessions=[];
@@ -34,10 +37,46 @@ test('root is the console and reads only its active Flame resource',async({page}
   await expect(page.getByRole('heading',{name:'Applications',exact:true,level:1})).toBeVisible();
   await expect(page.getByRole('button',{name:/flmping/})).toBeVisible();
   await expect(page.locator('#connection-name')).toHaveText('Training Flame');
+  const clusters = page.getByRole('combobox', {name:'Cluster', exact:true});
+  await expect(clusters).toBeEnabled();
+  await expect(clusters.locator('option')).toHaveText(['Training Flame']);
+  await expect(clusters).toHaveValue('http://flm:8080');
   expect(paths.every(p=>['/api/connection','/api/applications'].includes(p))).toBe(true);
-  await expect(page.getByRole('link',{name:'Settings',exact:true})).toHaveCount(0);
+  await expect(page.locator('#navigation a')).toHaveText(['Nodes','Executors','Applications','Sessions','Settings']);
   expect((await page.request.get('/dashboard')).status()).toBe(404);
   expect((await page.request.get('/console')).status()).toBe(404);
+  await page.getByRole('link',{name:'Nodes',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Nodes',exact:true,level:1})).toBeVisible();
+  await expect(clusters.locator('option')).toHaveText(['Training Flame']);
+  await expect(clusters).toHaveValue('http://flm:8080');
+});
+test('settings shows the configured cluster without requesting a resource inventory',async({page})=>{
+  const paths=[];page.on('request',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))paths.push(new URL(r.url()).pathname)});
+  await fixture(page);await page.goto('/#/settings');
+  await expect(page.getByRole('heading',{name:'Settings',exact:true,level:1})).toBeVisible();
+  await expect(page.locator('#content')).toContainText('Training Flame');
+  await expect(page.locator('#content')).toContainText('http://flm:8080');
+  await expect(page.getByLabel('Filter by status')).toBeHidden();
+  await expect(page.getByRole('button',{name:'Next →',exact:true})).toBeHidden();
+  await expect(page.locator('#join-command')).toHaveText("sudo sh setup.sh --join 'current-token'");
+  await page.context().grantPermissions(['clipboard-read','clipboard-write']);
+  await page.getByRole('button',{name:'Copy join command',exact:true}).click();
+  await expect(page.locator('#copy-status')).toHaveText('Copied');
+  expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe("sudo sh setup.sh --join 'current-token'");
+  expect(paths.sort()).toEqual(['/api/connection','/api/join']);
+  await page.getByRole('link',{name:'Nodes',exact:true}).click();
+  await expect(page.getByLabel('Filter by status')).toBeVisible();
+  await expect(page.getByRole('button',{name:/flm-worker-01/})).toBeVisible();
+  await expect(page.locator('#join-command')).toHaveCount(0);
+});
+test('settings does not offer unavailable or expired join commands',async({page})=>{
+  await fixture(page,{joinFail:true});await page.goto('/#/settings');
+  await expect(page.getByRole('region',{name:'Join a node'})).toContainText('Node join is not configured.');
+  await expect(page.getByRole('button',{name:'Copy join command',exact:true})).toHaveCount(0);
+  await page.unroute('**/api/**');await fixture(page,{joinExpired:true});
+  await page.getByRole('button',{name:'Refresh data',exact:true}).click();
+  await expect(page.getByRole('region',{name:'Join a node'})).toContainText('Join command unavailable.');
+  await expect(page.locator('#join-command')).toHaveCount(0);
 });
 test('resource pagination and filters use upstream pages and reset page one',async({page})=>{
   await fixture(page);await page.goto('/');
@@ -49,6 +88,15 @@ test('resource pagination and filters use upstream pages and reset page one',asy
   expect(new URL((await request).url()).searchParams.get('page')).toBe('1');
   await expect(page.getByRole('button',{name:/flmrun/})).toBeVisible();
   await expect(page.getByRole('button',{name:/flmping/})).toHaveCount(0);
+});
+test('compact desktop layout keeps a full resource page visible',async({page})=>{
+  await page.setViewportSize({width:1440,height:900});
+  await fixture(page);await page.goto('/');
+  const rows = page.locator('#content tbody tr');
+  await expect(rows).toHaveCount(12);
+  const last = await rows.last().boundingBox();
+  expect(last.y + last.height).toBeLessThan(900);
+  await expect(page.getByRole('button',{name:'Next →',exact:true})).toBeInViewport();
 });
 test('nodes show only direct Flame status and details',async({page})=>{
   await fixture(page);await page.goto('/#/nodes');
@@ -90,7 +138,7 @@ test('upstream failure is visible without fake healthy empty inventories',async(
   await expect(page.getByRole('heading',{name:'No applications yet'})).toHaveCount(0);
 });
 test('invalid resource hashes normalize to applications',async({page})=>{
-  await fixture(page);await page.goto('/#/settings');
+  await fixture(page);await page.goto('/#/unknown');
   await expect(page).toHaveURL(/#\/applications$/);
   await expect(page.getByRole('button',{name:/flmping/})).toBeVisible();
 });

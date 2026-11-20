@@ -25,20 +25,15 @@ The installer uses Helm for the control plane in an existing Kubernetes cluster:
 
 ```sh
 curl -fsSLo setup.sh https://xflops.io/cluster/setup.sh
-sh setup.sh --hostname flame.example.com \
-  --kubernetes-endpoint https://kubernetes.example.com:6443 --values flame-values.yaml
+sh setup.sh
 ```
 
-The values file sets the worker-reachable FLM `endpoint` (LAN IP and frontend
-NodePort). SREs prepare the dependencies described below. The operator generates
-a cluster join token and renews it every 15 minutes:
-
-```sh
-kubectl -n flame-system get secret flame-join \
-  -o jsonpath='{.data.token}' | base64 --decode
-# On the prepared worker host:
-sudo sh setup.sh --join '<token>'
-```
+Setup uses the active kubeconfig server for Kubernetes access and the
+session-manager/cache NodePort host. Defaults require no values file; `--values`
+is optional. SREs prepare the dependencies described below. The operator generates
+a cluster join token and renews it every 15 minutes. Open the UI at `/`, select
+**Settings**, and copy the **Join a node** command. Run it on the prepared worker
+host with `setup.sh` available; no `kubectl` token lookup is needed.
 
 The installer creates the FlameWorker and generates
 `conf/flmlet/flame-cluster.yaml` for FEM. No worker CR is needed in advance.
@@ -53,25 +48,39 @@ its trusted CA in `data["ca.crt"]`. The Envoy controller namespace is
 
 The Envoy gateway exposes session traffic on NodePort `30443` and cache traffic
 on NodePort `31443` by default, reachable through any routable Kubernetes node.
-SREs map `gateway.hostname` to their selected node in DNS. Envoy uses a NodePort
-Service rather than binding host ports or a node IP; operator-side DNS resolution
-is unnecessary. Reserve unique ports across clusters, including the
+Setup uses the kubeconfig server host for both endpoints. IPv4 hosts use IP
+certificates and need no new DNS record; a DNS hostname must resolve to a
+reachable node. Envoy uses a NodePort Service. Reserve unique ports across clusters, including the
 session-manager pair `30080`/`30081`. All four ports are configurable in Helm
 values; `gateway.ingressIp` is optional advertised-address metadata only.
+
+For manual Helm installation, supply the addresses that setup would derive.
+This example uses a Kubernetes node at `192.168.3.10`:
 
 ```sh
 helm upgrade --install flame-operator charts/flame-operator \
   --namespace flame-system --create-namespace
 helm upgrade --install flame charts/flame-cluster --namespace flame-system \
-  --set gateway.hostname=flame.example.com
+  --set gateway.hostname=192.168.3.10 --set endpointHost=192.168.3.10 \
+  --set kubernetesEndpoint=https://192.168.3.10:6443
 helm upgrade --install flame-console charts/flame-console --namespace flame-system \
   --set flame.endpoint=https://flame-session-manager:8080 \
-  --set flame.tls.caConfigMap=flame-client-ca
+  --set flame.tls.caConfigMap=flame-client-ca \
+  --set join.secretName=flame-join
 helm upgrade --install flame-ui charts/flame-ui --namespace flame-system
 kubectl -n flame-system port-forward service/flame-ui 8080:80
 ```
 
-Open `http://localhost:8080/`. The console talks directly to FLM and has no
+Open `http://localhost:8080/` to view the configured cluster's Applications page.
+The selector lists only that cluster. The Compact sidebar order is
+Nodes → Executors → Applications → Sessions → Settings. Settings shows the
+connection and the current node join command, including its expiration.
+
+The generated `flame.yaml` bundle uses a one-year TLS client certificate,
+renewed 30 days before expiry. Exported copies must be refreshed separately.
+This lifetime is separate from the 15-minute node join token rotation.
+
+The console talks directly to FLM and has no
 Kubernetes client, service-account token or Kubernetes RBAC. For an existing FLM,
 install just the console/UI charts and point `flame.endpoint` to that service.
 See [Helm values and SRE prerequisites](docs/deployment.md) for TLS, image selection,

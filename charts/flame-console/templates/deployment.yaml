@@ -48,6 +48,10 @@ spec:
               value: {{ required "flame.endpoint must be the direct FLM endpoint" .Values.flame.endpoint | quote }}
             - name: FLAME_NAME
               value: {{ .Values.flame.name | quote }}
+            {{- if .Values.join.secretName }}
+            - {name: FLAME_JOIN_TOKEN_FILE, value: "/etc/flame/join/token"}
+            - {name: FLAME_JOIN_EXPIRY_FILE, value: "/etc/flame/join/expiresAt"}
+            {{- end }}
             {{- with .Values.flame.tls.domain }}
             - {name: FLAME_TLS_DOMAIN, value: {{ . | quote }}}
             {{- end }}
@@ -69,12 +73,24 @@ spec:
           volumeMounts:
             - name: temporary
               mountPath: /tmp
+            {{- if .Values.join.secretName }}
+            - {name: flame-join, mountPath: /etc/flame/join, readOnly: true}
+            {{- end }}
             {{- if or $tls.caConfigMap $tls.secretName }}
             - {name: flame-tls, mountPath: /etc/flame/tls, readOnly: true}
             {{- end }}
       volumes:
         - name: temporary
           emptyDir: {}
+        {{- if .Values.join.secretName }}
+        - name: flame-join
+          secret:
+            secretName: {{ .Values.join.secretName | quote }}
+            optional: true
+            items:
+              - {key: token, path: token}
+              - {key: expiresAt, path: expiresAt}
+        {{- end }}
         {{- if or $tls.caConfigMap $tls.secretName }}
         - name: flame-tls
           projected:

@@ -30,6 +30,7 @@ and authorization remain the SRE's responsibility.
 The API exposes:
 
 - `GET /api/connection`: endpoint and display name, without credentials.
+- `GET /api/join`: current node join command and expiration, when configured.
 - `GET /api/nodes`, `/api/applications`, `/api/sessions`, `/api/executors`.
 - `GET /api/sessions/{id}/tasks`.
 - `POST /api/sessions/{id}/actions/{suspend|resume|close|delete}` with JSON `{}`.
@@ -45,6 +46,16 @@ retain meaningful HTTP status and reject cross-origin requests.
 
 Application responses omit credentials, environment variables and task payloads.
 The console does not expose a private-key download or Kubernetes settings API.
+To show the node join command in Settings, set Helm `join.secretName` to the
+operator's `<cluster>-join` Secret in the console namespace. The Secret is mounted
+read-only; no Kubernetes client, service account token, or RBAC is added. Outside
+Helm, configure `FLAME_JOIN_TOKEN_FILE` and `FLAME_JOIN_EXPIRY_FILE` together with
+paths to its `token` and `expiresAt` contents. Each `/api/join` request reads the
+current files so operator rotation appears without restarting the console.
+Missing, malformed, or expired credentials return HTTP 503 without a command.
+The join endpoint carries enrollment credentials and, like all API responses,
+uses `Cache-Control: no-store`. The copied command uses a local `setup.sh`; prepare
+that installer on the node before running it.
 SREs must restrict access to the UI/API because session actions use the configured
 FLM identity; this service does not add a separate user authorization system.
 

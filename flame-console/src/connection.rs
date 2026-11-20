@@ -28,6 +28,8 @@ pub struct ConnectionConfig {
     pub key_file: Option<PathBuf>,
     pub tls_domain: Option<String>,
     pub allowed_hosts: Vec<String>,
+    pub join_token_file: Option<PathBuf>,
+    pub join_expiry_file: Option<PathBuf>,
 }
 
 impl ConnectionConfig {
@@ -40,6 +42,8 @@ impl ConnectionConfig {
             key_file: None,
             tls_domain: None,
             allowed_hosts: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
+            join_token_file: None,
+            join_expiry_file: None,
         }
     }
 
@@ -57,6 +61,8 @@ impl ConnectionConfig {
         config.cert_file = get("FLAME_CERT_FILE").map(PathBuf::from);
         config.key_file = get("FLAME_KEY_FILE").map(PathBuf::from);
         config.tls_domain = get("FLAME_TLS_DOMAIN");
+        config.join_token_file = get("FLAME_JOIN_TOKEN_FILE").map(PathBuf::from);
+        config.join_expiry_file = get("FLAME_JOIN_EXPIRY_FILE").map(PathBuf::from);
         if let Some(hosts) = get("CONSOLE_ALLOWED_HOSTS") {
             config.allowed_hosts = hosts
                 .split(',')
@@ -68,6 +74,12 @@ impl ConnectionConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        if self.join_token_file.is_some() != self.join_expiry_file.is_some() {
+            return Err(
+                "FLAME_JOIN_TOKEN_FILE and FLAME_JOIN_EXPIRY_FILE must be configured together"
+                    .into(),
+            );
+        }
         if self.allowed_hosts.is_empty() {
             return Err("CONSOLE_ALLOWED_HOSTS must contain at least one hostname".into());
         }
@@ -108,6 +120,8 @@ pub struct AppState {
     pub(crate) endpoint: String,
     pub(crate) display_name: String,
     pub(crate) allowed_hosts: Vec<String>,
+    pub(crate) join_token_file: Option<PathBuf>,
+    pub(crate) join_expiry_file: Option<PathBuf>,
 }
 
 impl AppState {
@@ -138,6 +152,8 @@ impl AppState {
             client: FrontendClient::new(endpoint.connect_lazy()),
             endpoint: config.endpoint,
             display_name: config.display_name,
+            join_token_file: config.join_token_file,
+            join_expiry_file: config.join_expiry_file,
             allowed_hosts: config
                 .allowed_hosts
                 .iter()
@@ -224,5 +240,26 @@ mod tests {
         assert!(config.validate().is_err());
         config.key_file = Some("client.key".into());
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn join_files_must_be_configured_together() {
+        assert!(
+            ConnectionConfig::from_values(|name| match name {
+                "FLAME_ENDPOINT" => Some("http://127.0.0.1:8080".into()),
+                "FLAME_JOIN_TOKEN_FILE" => Some("/etc/flame/join/token".into()),
+                _ => None,
+            })
+            .is_err()
+        );
+        let config = ConnectionConfig::from_values(|name| match name {
+            "FLAME_ENDPOINT" => Some("http://127.0.0.1:8080".into()),
+            "FLAME_JOIN_TOKEN_FILE" => Some("/etc/flame/join/token".into()),
+            "FLAME_JOIN_EXPIRY_FILE" => Some("/etc/flame/join/expiresAt".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(config.join_token_file.is_some());
+        assert!(config.join_expiry_file.is_some());
     }
 }

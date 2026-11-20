@@ -6,7 +6,9 @@ runtime, networking, and storage first. flmlet configures and starts the install
 FEM and, when `manageObjectCache: true`, its paired FOC. It never downloads Flame
 releases, polls registries, installs Kubernetes, or requests Kubernetes CSRs.
 
-The operator renews a cluster join token every fifteen minutes. The repository's
+The operator renews a cluster join token every fifteen minutes. Copy the current
+join command from **Settings → Join a node** in the UI and run it on the prepared
+worker host with `setup.sh` available. The repository's
 `setup.sh --join "$TOKEN"` uses that token to create its worker through the
 operator, then installs flmlet with a durable, worker-scoped local kubeconfig.
 Renewing the cluster bootstrap token does not disrupt already joined workers.

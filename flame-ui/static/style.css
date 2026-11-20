@@ -75,13 +75,13 @@ svg {
   top:10px
 }
 .topbar {
-  height:76px;
+  height:56px;
   background:#fff;
   border-bottom:1px solid var(--border);
   display:flex;
   align-items:center;
   justify-content:space-between;
-  padding:0 32px 0 26px;
+  padding:0 20px 0 16px;
   position:sticky;
   top:0;
   z-index:4
@@ -123,7 +123,7 @@ svg {
   color:#374151;
   border:1px solid var(--border);
   border-radius:7px;
-  padding:9px 30px 9px 13px
+  padding:5px 26px 5px 10px
 }
 .live-dot,.orange-dot {
   display:inline-block;
@@ -142,18 +142,18 @@ svg {
 }
 .shell {
   display:grid;
-  grid-template-columns:220px minmax(0,1fr);
-  min-height:calc(100vh - 76px)
+  grid-template-columns:184px minmax(0,1fr);
+  min-height:calc(100vh - 56px)
 }
 .sidebar {
   border-right:1px solid var(--border);
   background:#fff;
-  padding:33px 14px 22px;
+  padding:20px 10px 16px;
   display:flex;
   flex-direction:column;
   position:sticky;
-  top:76px;
-  height:calc(100vh - 76px)
+  top:56px;
+  height:calc(100vh - 56px)
 }
 .nav-label {
   font-size:10px;
@@ -161,7 +161,7 @@ svg {
   font-weight:650;
   color:#6b7280;
   padding:0 17px;
-  margin-bottom:15px
+  margin-bottom:10px
 }
 nav {
   display:grid;
@@ -170,9 +170,9 @@ nav {
 .nav-item {
   display:flex;
   align-items:center;
-  gap:12px;
-  min-height:44px;
-  padding:11px 16px;
+  gap:8px;
+  min-height:34px;
+  padding:6px 12px;
   border-radius:7px;
   color:#4b5563;
   font-weight:500;
@@ -231,7 +231,7 @@ nav {
 }
 main {
   min-width:0;
-  padding:25px 38px 20px;
+  padding:16px 24px;
   max-width:1800px;
   width:100%;
   margin:0 auto;
@@ -258,7 +258,7 @@ main {
   justify-content:space-between;
   gap:20px;
   align-items:center;
-  margin:28px 0 27px
+  margin:12px 0 16px
 }
 .eyebrow {
   display:block;
@@ -269,7 +269,7 @@ main {
   margin-bottom:7px
 }
 h1 {
-  font-size:29px;
+  font-size:24px;
   font-weight:600;
   letter-spacing:-1px;
   color:#111827;
@@ -277,7 +277,7 @@ h1 {
 }
 .page-heading p {
   color:#4b5563;
-  margin-top:8px;
+  margin-top:4px;
   font-size:12px
 }
 .page-tools {
@@ -296,7 +296,7 @@ h1 {
   border:1px solid #dfe5ed;
   background:#fff;
   border-radius:6px;
-  padding:8px 12px;
+  padding:5px 10px;
   display:inline-flex;
   align-items:center;
   justify-content:center;
@@ -352,7 +352,7 @@ h1 {
   background:#f1f6ff;
   color:#6b90d8;
   border-radius:7px;
-  padding:7px;
+  padding:4px;
   display:flex
 }
 .metric-icon svg {
@@ -392,7 +392,7 @@ h1 {
   box-shadow:0 2px 4px #132d5a02
 }
 .table-toolbar {
-  padding:21px 23px;
+  padding:12px 16px;
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -428,7 +428,7 @@ h1 {
   gap:8px;
   border:1px solid var(--border);
   border-radius:6px;
-  padding:7px 10px;
+  padding:5px 8px;
   color:#6b7280
 }
 .search>span:first-child {
@@ -453,12 +453,12 @@ h1 {
   border:1px solid var(--border);
   border-radius:6px;
   background:#fff;
-  padding:7px 10px;
+  padding:5px 8px;
   max-width:155px
 }
 .table-wrap {
   overflow-x:auto;
-  min-height:250px
+  min-height:0
 }
 table {
   width:100%;
@@ -475,18 +475,18 @@ th {
   font-size:10px;
   color:#4b5563;
   font-weight:500;
-  padding:12px 20px;
+  padding:8px 14px;
   letter-spacing:.15px
 }
 th:first-child,td:first-child {
-  padding-left:24px
+  padding-left:16px
 }
 td {
   font-size:11px;
   color:#4b5563;
-  padding:16px 20px;
+  padding:6px 14px;
   border-bottom:1px solid #f0f3f7;
-  height:67px
+  height:42px
 }
 tbody tr:last-child td {
   border-bottom:0
@@ -514,7 +514,7 @@ tbody tr:hover {
   border:1px solid #e9edf5;
   background:#fafbff;
   border-radius:7px;
-  padding:7px;
+  padding:4px;
   display:flex;
   color:#6983b0
 }
@@ -613,7 +613,7 @@ tbody tr:hover {
 }
 .table-footer {
   border-top:1px solid var(--border);
-  padding:14px 23px;
+  padding:10px 16px;
   display:flex;
   justify-content:space-between;
   align-items:center;
@@ -862,7 +862,7 @@ dialog::backdrop {
     display:none
   }
   .table-toolbar {
-    gap:12px;
+    gap:8px;
     padding:18px
   }
   .filters {
@@ -872,13 +872,13 @@ dialog::backdrop {
     width:120px
   }
   td,th {
-    padding:14px
+    padding:6px 12px
   }
 }
 @media(max-width:760px) {
   .topbar {
     padding:0 18px;
-    height:67px
+    height:56px
   }
   .brand {
     font-size:16px;
@@ -909,7 +909,7 @@ dialog::backdrop {
   .sidebar {
     height:auto;
     position:sticky;
-    top:67px;
+    top:56px;
     z-index:3;
     padding:8px;
     border-right:0;
@@ -939,11 +939,11 @@ dialog::backdrop {
     display:none
   }
   main {
-    padding:18px 16px
+    padding:12px
   }
   .page-heading {
     flex-direction:column;
-    margin:21px 0;
+    margin:12px 0;
     gap:17px
   }
   h1 {
@@ -1086,4 +1086,9 @@ dialog::backdrop {
 .session-progress-legend strong { font-weight:550; color:#374151 }
 
 /* Reserve the progress caption height so buttons align with the bar. */
-.session-actions { padding-bottom:22px; display:flex; align-items:center; justify-content:flex-end; gap:6px; white-space:nowrap }
+.session-actions { padding-bottom:0; display:flex; align-items:center; justify-content:flex-end; gap:6px; white-space:nowrap }
+
+.join-settings { padding:16px }
+.join-settings p { color:#4b5563; line-height:1.6 }
+.join-settings pre { padding:12px; background:#f8fafc; border:1px solid var(--border); border-radius:7px; white-space:pre-wrap; overflow-wrap:anywhere }
+#copy-status { margin-left:12px; font-size:12px }

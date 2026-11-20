@@ -291,6 +291,85 @@ async fn get(app: Router, uri: &str) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
+async fn join_command_reads_rotating_credentials_and_refuses_expired_or_invalid_tokens() {
+    let directory = tempfile::tempdir().unwrap();
+    let token_file = directory.path().join("token");
+    let expiry_file = directory.path().join("expiresAt");
+    let mut config = ConnectionConfig::new("http://127.0.0.1:9");
+    config.join_token_file = Some(token_file.clone());
+    config.join_expiry_file = Some(expiry_file.clone());
+    let app = router(AppState::connect(config).unwrap());
+    assert_eq!(
+        get(app.clone(), "/api/join").await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let expiry = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
+    std::fs::write(&expiry_file, &expiry).unwrap();
+    for token in ["Zmlyc3Q=", "cm90YXRlZA=="] {
+        std::fs::write(&token_file, token).unwrap();
+        let (status, data) = get(app.clone(), "/api/join").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            data,
+            json!({"command":format!("sudo sh setup.sh --join '{token}'"),"expiresAt":expiry})
+        );
+        let (_, connection) = get(app.clone(), "/api/connection").await;
+        assert_eq!(
+            connection,
+            json!({"endpoint":"http://127.0.0.1:9","displayName":"Flame"})
+        );
+    }
+    for token in ["", "unsafe'$(id)", "not base64"] {
+        std::fs::write(&token_file, token).unwrap();
+        let (status, data) = get(app.clone(), "/api/join").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(data.get("command").is_none());
+    }
+    std::fs::write(&token_file, "ZXhwaXJlZA==").unwrap();
+    for expiry in ["2020-01-01T00:00:00Z", "invalid"] {
+        std::fs::write(&expiry_file, expiry).unwrap();
+        let (status, data) = get(app.clone(), "/api/join").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!data.to_string().contains("ZXhwaXJlZA=="));
+    }
+}
+
+#[tokio::test]
+async fn join_command_is_unavailable_when_not_configured() {
+    let app = router(AppState::connect(ConnectionConfig::new("http://127.0.0.1:9")).unwrap());
+    let (status, data) = get(app, "/api/join").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(data.get("command").is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn join_command_does_not_mix_projected_secret_generations() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir().unwrap();
+    for generation in ["old", "new"] {
+        let path = directory.path().join(generation);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("token"), "dG9rZW4=").unwrap();
+        std::fs::write(
+            path.join("expiresAt"),
+            (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339(),
+        )
+        .unwrap();
+    }
+    let token_file = directory.path().join("token");
+    let expiry_file = directory.path().join("expiresAt");
+    symlink("old/token", &token_file).unwrap();
+    symlink("new/expiresAt", &expiry_file).unwrap();
+    let mut config = ConnectionConfig::new("http://127.0.0.1:9");
+    config.join_token_file = Some(token_file);
+    config.join_expiry_file = Some(expiry_file);
+    let (status, data) = get(router(AppState::connect(config).unwrap()), "/api/join").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(data.get("command").is_none());
+}
+
+#[tokio::test]
 async fn connection_and_health_need_no_upstream_or_kubernetes() {
     let mut config = ConnectionConfig::new("http://127.0.0.1:9");
     config.display_name = "Training".into();

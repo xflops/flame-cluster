@@ -1,5 +1,5 @@
 #!/bin/sh
-# curl -fsSL https://xflops.io/cluster/setup.sh | sh -s -- --hostname flame.example.com
+# curl -fsSL https://xflops.io/cluster/setup.sh | sh
 # curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join "$JOIN_TOKEN"
 set +x
 set -eu
@@ -9,7 +9,7 @@ fail() { printf 'Flame Cluster: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "required command is missing: $1"; }
 usage() {
     cat <<'USAGE'
-usage: setup.sh --hostname HOST [options]
+usage: setup.sh [options]
        setup.sh --join TOKEN [options]
        setup.sh --join --token-file FILE [options]
 
@@ -17,13 +17,13 @@ usage: setup.sh --hostname HOST [options]
   --artifacts-dir DIR       use local release artifacts and SHA256SUMS instead of downloading
   --namespace NAME          Kubernetes namespace (default flame-system)
   --cluster NAME            FlameCluster name (default flame)
-  --hostname HOST           public Flame gateway hostname
-  --values FILE             additional flame-cluster chart values
+  --hostname HOST           gateway host (default active kubeconfig server host)
+  --values FILE             optional additional flame-cluster chart values
   --flame-version TAG       desired Flame runtime version (default latest)
   --image-tag TAG           operator/console/UI image tag (default release version)
-  --endpoint HOST:PORT      SRE-selected worker-reachable FLM address
+  --endpoint HOST:PORT      worker FLM override (default kubeconfig IPv4:nodePort)
   --console-endpoint URL    direct console FLM endpoint (default the session-manager Service)
-  --kubernetes-endpoint URL SRE-selected HTTPS Kubernetes API address for worker enrollment
+  --kubernetes-endpoint URL enrollment API override (default active kubeconfig server)
   --kubeconfig FILE         Kubernetes credentials for Helm installation
   --join TOKEN              install flmlet using an operator-issued join token
   --token-file FILE         read the join token from a file instead; never printed
@@ -165,10 +165,40 @@ kube() { if [ -n "$kubeconfig" ]; then kubectl --kubeconfig "$kubeconfig" "$@"; 
 helm_command() { if [ -n "$kubeconfig" ]; then helm --kubeconfig "$kubeconfig" "$@"; else helm "$@"; fi; }
 
 if [ "$mode" = cluster ]; then
-    printf '%s\n' "$hostname" | LC_ALL=C grep -Eq '^[a-zA-Z0-9]([-.a-zA-Z0-9]*[a-zA-Z0-9])?$' || fail '--hostname must be a DNS hostname or IPv4 address'
-    [ -n "$hostname" ] || fail '--hostname is required for a cluster installation'
     [ -z "$token_file" ] && [ -z "$worker" ] || fail '--token-file and --worker require --join'
-    for tool in helm kubectl; do need "$tool"; done
+    for tool in helm kubectl python3; do need "$tool"; done
+    kube_server="$(kube config view --minify -o 'jsonpath={.clusters[0].cluster.server}')" || fail 'cannot read the active kubeconfig server'
+    python3 - "$kube_server" "$work/kube-host" "$work/worker-host" "$endpoint" <<'PY'
+import ipaddress
+import socket
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+try:
+    url = urlsplit(sys.argv[1])
+    host = url.hostname
+    if (url.scheme != 'https' or not host or url.username is not None or url.password is not None
+            or url.path not in ('', '/') or url.query or url.fragment or ':' in host
+            or not all(c.isascii() and (c.isalnum() or c in '.-') for c in host)
+            or (url.port is not None and not 1 <= url.port <= 65535)):
+        raise ValueError()
+    Path(sys.argv[2]).write_text(host)
+    if not sys.argv[4]:
+        address = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+        ip = ipaddress.IPv4Address(address)
+        networks = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
+        if not any(ip in ipaddress.IPv4Network(network) for network in networks):
+            raise ValueError()
+        Path(sys.argv[3]).write_text(str(ip))
+except (ValueError, OSError):
+    sys.exit('Flame Cluster: active kubeconfig must use HTTPS and resolve to a worker-reachable RFC 1918 IPv4; use --endpoint to override frontend IPv4 discovery')
+PY
+    hostname="${hostname:-$(cat "$work/kube-host")}"
+    kubernetes_endpoint="${kubernetes_endpoint:-$kube_server}"
+    endpoint_host=
+    [ -n "$endpoint" ] || endpoint_host="$(cat "$work/worker-host")"
+    printf '%s\n' "$hostname" | LC_ALL=C grep -Eq '^[a-zA-Z0-9]([-.a-zA-Z0-9]*[a-zA-Z0-9])?$' || fail '--hostname must be a DNS hostname or IPv4 address'
     kube get --raw /readyz >/dev/null || fail 'Kubernetes API is not ready'
     for crd in certificates.cert-manager.io clusterissuers.cert-manager.io gateways.gateway.networking.k8s.io backendtlspolicies.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io referencegrants.gateway.networking.k8s.io envoyproxies.gateway.envoyproxy.io clienttrafficpolicies.gateway.envoyproxy.io; do
         kube get crd "$crd" >/dev/null 2>&1 || fail "SRE prerequisite is missing: $crd"
@@ -184,7 +214,7 @@ if [ "$mode" = cluster ]; then
     helm_command template flame-operator "$work/charts/flame-operator" --namespace "$namespace" --set-string "image.tag=$image_tag" > "$work/operator.yaml"
     set -- template flame-cluster "$work/charts/flame-cluster" --namespace "$namespace"
     [ -z "$values" ] || set -- "$@" --values "$values"
-    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "version=$flame_version"
+    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "endpointHost=$endpoint_host" --set-string "version=$flame_version"
     [ -z "$endpoint" ] || set -- "$@" --set-string "endpoint=$endpoint"
     [ -z "$kubernetes_endpoint" ] || set -- "$@" --set-string "kubernetesEndpoint=$kubernetes_endpoint"
     helm_command "$@" > "$work/cluster.yaml"
@@ -197,7 +227,7 @@ if [ "$mode" = cluster ]; then
     kube wait "gatewayclass/$gateway_class" --for=condition=Accepted --timeout=120s >/dev/null || fail 'SRE GatewayClass is not accepted'
     kube wait "clusterissuer/$issuer" --for=condition=Ready --timeout=120s >/dev/null || fail 'SRE ClusterIssuer is not ready'
     console_endpoint="${console_endpoint:-https://$cluster-session-manager.$namespace.svc:8080}"
-    helm_command template flame-console "$work/charts/flame-console" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "flame.endpoint=$console_endpoint" --set-string "flame.tls.caConfigMap=$issuer" --set-string flame.tls.caKey=ca.crt --set-string flame.tls.certKey= --set-string flame.tls.keyKey= > "$work/console.yaml"
+    helm_command template flame-console "$work/charts/flame-console" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "flame.endpoint=$console_endpoint" --set-string "flame.name=$cluster" --set-string "join.secretName=$cluster-join" --set-string "flame.tls.caConfigMap=$issuer" --set-string flame.tls.caKey=ca.crt --set-string flame.tls.certKey= --set-string flame.tls.keyKey= > "$work/console.yaml"
     helm_command template flame-ui "$work/charts/flame-ui" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "consoleUpstream=flame-console.$namespace.svc:3000" > "$work/ui.yaml"
     # Flame CRDs belong to this release; third-party CRDs remain SRE-owned.
     [ -d "$work/charts/flame-operator/crds" ] || fail 'operator CRDs are missing from the release'
@@ -207,12 +237,12 @@ if [ "$mode" = cluster ]; then
     # Reuse the exact preflight-rendered cluster flags.
     set -- upgrade --install flame-cluster "$work/charts/flame-cluster" --namespace "$namespace"
     [ -z "$values" ] || set -- "$@" --values "$values"
-    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "version=$flame_version"
+    set -- "$@" --set-string "nameOverride=$cluster" --set-string "gateway.hostname=$hostname" --set-string "endpointHost=$endpoint_host" --set-string "version=$flame_version"
     [ -z "$endpoint" ] || set -- "$@" --set-string "endpoint=$endpoint"
     [ -z "$kubernetes_endpoint" ] || set -- "$@" --set-string "kubernetesEndpoint=$kubernetes_endpoint"
     helm_command "$@" --wait --atomic --timeout 5m
     kube -n "$namespace" wait "flamecluster/$cluster" --for=condition=Ready --timeout=15m
-    helm_command upgrade --install flame-console "$work/charts/flame-console" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "flame.endpoint=$console_endpoint" --set-string "flame.tls.caConfigMap=$issuer" --set-string flame.tls.caKey=ca.crt --set-string flame.tls.certKey= --set-string flame.tls.keyKey= --wait --atomic --timeout 5m
+    helm_command upgrade --install flame-console "$work/charts/flame-console" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "flame.endpoint=$console_endpoint" --set-string "flame.name=$cluster" --set-string "join.secretName=$cluster-join" --set-string "flame.tls.caConfigMap=$issuer" --set-string flame.tls.caKey=ca.crt --set-string flame.tls.certKey= --set-string flame.tls.keyKey= --wait --atomic --timeout 5m
     helm_command upgrade --install flame-ui "$work/charts/flame-ui" --namespace "$namespace" --set-string "image.tag=$image_tag" --set-string "consoleUpstream=flame-console.$namespace.svc:3000" --wait --atomic --timeout 5m
     printf 'Flame Cluster %s installed in %s.\n' "$cluster" "$namespace"
     printf 'Console: kubectl -n %s port-forward service/flame-ui 8080:80\n' "$namespace"

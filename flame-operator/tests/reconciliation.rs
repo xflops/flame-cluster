@@ -119,6 +119,101 @@ fn owner_header_routes_point_to_exact_lan_caches() {
 }
 
 #[test]
+fn gateway_ipv4_endpoints_use_ip_sans_without_gateway_api_hostnames() {
+    let mut spec = spec();
+    spec.gateway.hostname = "192.168.3.149".into();
+    let objects = resources::flame_resources(
+        "flame",
+        "flame-system",
+        "uid",
+        &spec,
+        &spec.image,
+        &workers(),
+    )
+    .unwrap();
+    let certificate = objects
+        .iter()
+        .find(|object| {
+            object["kind"] == "Certificate" && object["metadata"]["name"] == "flame-gateway-tls"
+        })
+        .unwrap();
+    assert_eq!(certificate["spec"]["ipAddresses"], json!(["192.168.3.149"]));
+    assert!(certificate["spec"].get("dnsNames").is_none());
+    let gateway = objects
+        .iter()
+        .find(|object| object["kind"] == "Gateway")
+        .unwrap();
+    for listener in gateway["spec"]["listeners"].as_array().unwrap() {
+        assert!(listener.get("hostname").is_none());
+    }
+    let routes: Vec<_> = objects
+        .iter()
+        .filter(|object| object["kind"] == "HTTPRoute")
+        .collect();
+    assert_eq!(routes.len(), workers().len() + 2);
+    for route in routes {
+        assert!(route["spec"].get("hostnames").is_none());
+    }
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let source = ["ca.crt", "tls.crt", "tls.key"]
+        .into_iter()
+        .map(|key| {
+            (
+                key.into(),
+                k8s_openapi::ByteString(b"test-credential".to_vec()),
+            )
+        })
+        .collect();
+    let secret = resources::client_secret("flame", "flame-system", &spec, &source)
+        .unwrap()
+        .unwrap();
+    let config = STANDARD
+        .decode(secret["data"]["flame.yaml"].as_str().unwrap())
+        .unwrap();
+    let config: Value = serde_yaml::from_slice(&config).unwrap();
+    assert_eq!(
+        config["contexts"][0]["cluster"]["endpoint"],
+        "https://192.168.3.149:30443"
+    );
+    assert_eq!(
+        config["contexts"][0]["cache"]["endpoint"],
+        "grpcs-proxy://192.168.3.149:31443"
+    );
+}
+
+#[test]
+fn gateway_dns_endpoints_keep_dns_sans_and_gateway_api_hostnames() {
+    let spec = spec();
+    let objects =
+        resources::flame_resources("flame", "flame-system", "uid", &spec, &spec.image, &[])
+            .unwrap();
+    let certificate = objects
+        .iter()
+        .find(|object| {
+            object["kind"] == "Certificate" && object["metadata"]["name"] == "flame-gateway-tls"
+        })
+        .unwrap();
+    assert_eq!(
+        certificate["spec"]["dnsNames"],
+        json!([spec.gateway.hostname])
+    );
+    assert!(certificate["spec"].get("ipAddresses").is_none());
+    let gateway = objects
+        .iter()
+        .find(|object| object["kind"] == "Gateway")
+        .unwrap();
+    for listener in gateway["spec"]["listeners"].as_array().unwrap() {
+        assert_eq!(listener["hostname"], spec.gateway.hostname);
+    }
+    for route in objects
+        .iter()
+        .filter(|object| object["kind"] == "HTTPRoute")
+    {
+        assert_eq!(route["spec"]["hostnames"], json!([spec.gateway.hostname]));
+    }
+}
+
+#[test]
 fn gateway_uses_parameters_ref_and_explicit_nodeports() {
     let mut spec = spec();
     spec.gateway.hostname = "flame.example.com".into();
@@ -485,6 +580,26 @@ fn client_secret_contains_config_and_rotating_tls_material() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn exported_client_certificate_lasts_one_year_without_extending_flm_server_credentials() {
+    let spec = spec();
+    let objects =
+        resources::flame_resources("flame", "flame-system", "uid", &spec, &spec.image, &[])
+            .unwrap();
+    for (name, duration, renew_before, usage) in [
+        ("flame-admin-client", "8760h", "720h", "client auth"),
+        ("flame-control-plane-tls", "24h", "8h", "server auth"),
+    ] {
+        let certificate = objects
+            .iter()
+            .find(|object| object["kind"] == "Certificate" && object["metadata"]["name"] == name)
+            .unwrap();
+        assert_eq!(certificate["spec"]["duration"], duration);
+        assert_eq!(certificate["spec"]["renewBefore"], renew_before);
+        assert_eq!(certificate["spec"]["usages"], json!([usage]));
+    }
 }
 
 #[test]

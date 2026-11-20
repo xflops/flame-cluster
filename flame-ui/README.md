@@ -1,8 +1,20 @@
 # Flame UI
 
-The root URL `/` serves the Flame console. Applications, sessions, nodes, and
+The root URL `/` opens the configured cluster's Applications view (`#/applications`).
+Applications, sessions, nodes, and
 executors come from the console backend's direct FLM connection. There is no
-Kubernetes inventory or separate dashboard URL.
+Kubernetes inventory or separate dashboard URL. The cluster selector lists only
+the configured cluster. Navigation is Nodes, Executors, Applications, Sessions,
+Settings. Settings displays connection details and a copyable node join command
+with its expiration, loaded from `/api/join` only while Settings is open.
+The command uses the current rotating token; unavailable or expired tokens do
+not produce a copyable command. Refresh Settings for the latest command.
+The cluster installer configures the join Secret mount automatically. For a
+manual console deployment, set `join.secretName` as described in the
+[console configuration](../flame-console/README.md).
+
+Compact density is the default for the header, sidebar, table rows, controls,
+and Settings. A full 12-row resource page fits a 1440×900 viewport.
 
 The browser calls same-origin `/api` routes through Nginx. Set
 `CONSOLE_API_UPSTREAM=flame-console:3000` when running the image; the Helm chart

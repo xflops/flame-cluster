@@ -58,13 +58,14 @@ class Installer(unittest.TestCase):
         write(self.bin / 'helm', '''#!/bin/sh
 printf 'helm %s\\n' "$*" >> "$INSTALL_TEST_LOG"
 case "$*" in
-  *template*flame-cluster*) printf 'gateway:\\n  className: flame-envoy\\n  issuerName: flame-client-ca\\n' ;;
+  *template*flame-cluster*) printf 'nodePort: 30080\\ngateway:\\n  className: flame-envoy\\n  issuerName: flame-client-ca\\n  sessionPort: %s\\n  cachePort: 31443\\n' "${INSTALL_TEST_SESSION_PORT:-30443}" ;;
   *template*flame-console*) [ "${INSTALL_TEST_BAD_RENDER:-0}" != 1 ] ;;
 esac
 ''')
         write(self.bin / 'kubectl', '''#!/bin/sh
 printf 'kubectl %s\\n' "$*" >> "$INSTALL_TEST_LOG"
 case "$*" in
+  *'config view --minify'*) printf '%s\\n' "${INSTALL_TEST_KUBE_SERVER-https://192.168.3.10:6443}" ;;
   *'get crd certificates.cert-manager.io'*) [ "${INSTALL_TEST_MISSING_DEP:-0}" != 1 ] ;;
   *'get crd backendtlspolicies.gateway.networking.k8s.io'*) [ "${INSTALL_TEST_MISSING_BACKEND_TLS:-0}" != 1 ] ;;
 esac
@@ -165,10 +166,56 @@ esac
         self.assertIn('--token-file', result.stdout)
         self.assertEqual(self.operations(), '')
 
-    def test_missing_hostname_changes_nothing(self):
+    def test_cluster_defaults_to_existing_kubeconfig_and_nodeports(self):
         result = self.run_setup()
-        self.assertNotEqual(result.returncode, 0)
-        self.no_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        operations = self.operations().splitlines()
+        self.assertTrue(any('config view --minify' in line for line in operations))
+        cluster_invocations = [line for line in operations if 'helm template flame-cluster ' in line or '--install flame-cluster ' in line]
+        self.assertEqual(len(cluster_invocations), 2)
+        for invocation in cluster_invocations:
+            self.assertIn('gateway.hostname=192.168.3.10', invocation)
+            self.assertIn('endpointHost=192.168.3.10', invocation)
+            self.assertIn('kubernetesEndpoint=https://192.168.3.10:6443', invocation)
+
+    def test_explicit_kubeconfig_is_used_for_endpoint_discovery(self):
+        kubeconfig = self.root / 'selected-kubeconfig'
+        kubeconfig.write_text('fixture')
+        result = self.run_setup('--kubeconfig', str(kubeconfig), INSTALL_TEST_KUBE_SERVER='https://192.168.3.20:7443')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        operations = self.operations()
+        self.assertIn(f'kubectl --kubeconfig {kubeconfig} config view --minify', operations)
+        self.assertIn('gateway.hostname=192.168.3.20', operations)
+        self.assertIn('endpointHost=192.168.3.20', operations)
+        self.assertIn('kubernetesEndpoint=https://192.168.3.20:7443', operations)
+
+    def test_endpoint_overrides_are_preserved(self):
+        result = self.run_setup('--hostname', 'gateway.example.test', '--endpoint', '192.168.3.30:32080', '--kubernetes-endpoint', 'https://enroll.example.test:6443')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for invocation in self.operations().splitlines():
+            if 'helm template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
+                self.assertIn('gateway.hostname=gateway.example.test', invocation)
+                self.assertIn('endpoint=192.168.3.30:32080', invocation)
+                self.assertIn('kubernetesEndpoint=https://enroll.example.test:6443', invocation)
+
+    def test_optional_values_preserve_chart_nodeport_selection(self):
+        values = self.root / 'cluster-values.yaml'
+        values.write_text('nodePort: 32080\n')
+        result = self.run_setup('--values', str(values))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for invocation in self.operations().splitlines():
+            if 'helm template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
+                self.assertIn(f'--values {values}', invocation)
+                self.assertIn('endpointHost=192.168.3.10', invocation)
+                self.assertNotIn('--set-string endpoint=', invocation)
+                self.assertNotIn('--set-string nodePort=', invocation)
+
+    def test_invalid_kubeconfig_server_changes_nothing(self):
+        for server in ['', 'not-a-url', 'http://node.example.test:6443', 'https://user:secret@node.example.test:6443', 'https://node.example.test:6443/path', 'https://node.example.test:6443?token=secret']:
+            with self.subTest(server=server):
+                result = self.run_setup(INSTALL_TEST_KUBE_SERVER=server)
+                self.assertNotEqual(result.returncode, 0)
+                self.no_install()
 
     def test_missing_sre_dependency_changes_nothing(self):
         result = self.run_setup('--hostname', 'flame.example.test', INSTALL_TEST_MISSING_DEP='1')
@@ -215,6 +262,9 @@ esac
         self.assertNotIn('flame.tls.secretName=', self.operations())
         self.assertNotIn('flame-control-plane-tls', self.operations())
         console_render = next(line for line in operations if 'helm template flame-console ' in line)
+        for invocation in (console, console_render):
+            self.assertIn('flame.name=flame', invocation)
+            self.assertIn('join.secretName=flame-join', invocation)
         self.assertIn('flame.tls.caConfigMap=flame-client-ca', console_render)
         self.assertIn('flame.tls.caKey=ca.crt', console)
         self.assertIn('flame.tls.certKey= ', console)

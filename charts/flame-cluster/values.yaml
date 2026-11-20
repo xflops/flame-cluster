@@ -1,6 +1,8 @@
 nameOverride: flame
 version: latest
 endpoint: ""
+# Installer-derived kubeconfig IPv4; combined with nodePort unless endpoint is set.
+endpointHost: ""
 kubernetesEndpoint: ""
 rolloutRevision: ""
 image: docker.io/xflops/flame-session-manager:latest

@@ -1,13 +1,14 @@
 import { views, escapeHtml as e, number as n, formatNumber as f, bytes, nameOf, idOf, stateOf, shim, parseRoute } from './model.js';
 const $ = selector => document.querySelector(selector);
 const paths = {
+  settings: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
   applications: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   sessions: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   nodes: '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M12 6.5h5M12 17.5h5"/>',
   executors: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><path d="m10 10 4 2-4 2z"/>',
 };
 const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
-const state = { view: parseRoute(location.hash), connection: null, pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
+const state = { view: parseRoute(location.hash), connection: null, join: null, pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
 let pollController, taskController, revision = 0;
 const pageSize = 12;
 const apiBase = () => '/api';
@@ -84,12 +85,17 @@ function renderNavigation() {
 function render() {
   renderNavigation();
   const view = views[state.view];
-  $('#connection-name').textContent = state.connection?.displayName || 'Flame';
+  $('#connection-name').innerHTML = `<option value="${e(state.connection?.endpoint || '')}">${e(state.connection?.displayName || 'Flame')}</option>`;
+  $('#connection-name').disabled = !state.connection;
   $('#connection-name').title = state.connection?.endpoint || '';
   $('#page-title').textContent = view.title;
   $('#page-description').textContent = view.description;
   $('#breadcrumb-detail').textContent = view.title;
-  $('#section-title').textContent = `All ${view.title.toLowerCase()}`;
+  const settings = state.view === 'settings';
+  $('#section-title').textContent = settings ? 'Cluster connection' : `All ${view.title.toLowerCase()}`;
+  $('#row-count').hidden = settings;
+  $('.filters').hidden = settings;
+  $('.table-footer').hidden = settings;
   $('#eyebrow').textContent = (state.connection?.displayName || 'Flame').toUpperCase();
   const filter = $('#status-filter');
   filter.innerHTML = '<option value="">All states</option>' + view.states.map(s => `<option>${e(s)}</option>`).join('');
@@ -104,6 +110,25 @@ function render() {
   const dot = $('#connection-dot');
   dot.className = `live-dot ${errors.length ? 'bad' : state.lastUpdate ? 'good' : ''}`;
   dot.title = errors.length ? 'Some data is unavailable' : state.lastUpdate ? 'Connected' : 'Connecting';
+  if (settings) {
+    $('#content').innerHTML = state.connection
+      ? table(['Setting', 'Value'], [
+        `<tr><td>Cluster</td><td>${e(state.connection.displayName)}</td></tr>`,
+        `<tr><td>FLM endpoint</td><td>${e(state.connection.endpoint)}</td></tr>`,
+      ])
+      : empty(errors.length ? 'Unable to load settings' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Connection settings will appear here shortly.');
+    const join = state.join && Date.parse(state.join.expiresAt) > Date.now() ? state.join : null;
+    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on a prepared worker host with the Flame runtime and setup.sh installed.</p>${join
+      ? `<pre><code id="join-command">${e(join.command)}</code></pre><p>Expires ${e(new Date(join.expiresAt).toLocaleString())}. Refresh to get the latest command.</p><button class="button" id="copy-join">Copy join command</button><span id="copy-status" role="status"></span>`
+      : `<p>${e(state.errors.join || (state.loading ? 'Loading join command…' : 'Join command unavailable. Refresh to retry.'))}</p>`}</section>`);
+    $('#copy-join')?.addEventListener('click', async () => {
+      const status = $('#copy-status');
+      if (Date.parse(join.expiresAt) <= Date.now()) { status.textContent = 'Command expired. Refresh to get a new command.'; return; }
+      try { await navigator.clipboard.writeText(join.command); status.textContent = 'Copied'; }
+      catch { status.textContent = 'Select and copy the command above.'; }
+    });
+    return;
+  }
   const rows = data?.items || [], total = data?.total ?? rows.length;
   $('#row-count').textContent = data ? f(total) : '—';
   $('#previous').disabled = state.page === 0 || !data;
@@ -150,7 +175,7 @@ async function refresh() {
       const data = await json(url, controller.signal);
       if (generation !== revision) return;
       apply(data); delete state.errors[key];
-      if (key !== 'connection') {
+      if (key !== 'connection' && key !== 'join') {
         const receivedAt = new Date(); state.lastUpdate = receivedAt;
         pageCache.delete(url); pageCache.set(url, { data, receivedAt });
         if (pageCache.size > 24) pageCache.delete(pageCache.keys().next().value);
@@ -158,6 +183,7 @@ async function refresh() {
       render();
     } catch (error) {
       if (generation !== revision) return;
+      if (key === 'join') state.join = null;
       state.errors[key] = error.name === 'AbortError' ? 'Request timed out' : error.message;
       render();
     }
@@ -165,7 +191,7 @@ async function refresh() {
   const view = state.view;
   await Promise.allSettled([
     load('connection', '/api/connection', data => { state.connection = data; }),
-    load(view, resourceUrl(), data => { state.pages[view] = data; }),
+    ...(view === 'settings' ? [load('join', '/api/join', data => { state.join = data; })] : [load(view, resourceUrl(), data => { state.pages[view] = data; })]),
   ]);
   clearTimeout(timer);
   if (generation !== revision) return;
@@ -236,7 +262,7 @@ function route() {
   revision++; pollController?.abort(); taskController?.abort();
   state.view = parseRoute(location.hash);
   if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
-  Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null});
+  Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null});
   restorePage(); $('#details').close();
   document.title = `${views[state.view].title} · Flame Console`;
   render(); refresh();

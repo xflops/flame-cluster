@@ -70,7 +70,8 @@ helm upgrade --install flame-ui charts/flame-ui --namespace flame-system
 
 Setup defaults the UI external IP to the IPv4 address of the kubeconfig server
 (without its API port) and adds it to the API host allowlist. To use the
-manager's Tailscale IPv4 instead, pass `--ui-address <tailscale-ip>`. Open `http://<tailscale-ip>/` to view the configured cluster's
+manager's Tailscale IPv4, use that address in the selected kubeconfig server
+endpoint. Open `http://<tailscale-ip>/` to view the configured cluster's
 Applications page; see [direct access](docs/deployment.md#direct-tailscale-access)
 for Helm commands.
 The selector lists only that cluster. The Compact sidebar order is

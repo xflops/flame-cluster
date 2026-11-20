@@ -66,14 +66,12 @@ each worker reports its own readiness separately.
 
 ## Direct Tailscale access
 
-Setup exposes the UI directly on the kubeconfig server's IPv4 by default,
-stripping the Kubernetes API port. It sets `service.externalIPs` and the API host
-allowlist together. If kubeconfig uses the Tailscale address, no override is
-needed. If kubeconfig uses a LAN address, select Tailscale explicitly:
-
-```sh
-sh setup.sh --ui-address 100.117.27.41
-```
+Setup exposes the UI directly on the kubeconfig server's IPv4,
+stripping the HTTPS scheme and Kubernetes API port. It sets
+`service.externalIPs` and the API host allowlist from that endpoint, without a
+separate UI address flag. Use a kubeconfig whose server is the node-owned address
+you want to advertise, including a Tailscale address when appropriate. A
+loopback-only tunnel endpoint is not suitable for remote UI/worker access.
 
 For a manual Helm installation with manager address `100.117.27.41`:
 

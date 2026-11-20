@@ -22,7 +22,6 @@ usage: setup.sh [options]
   --flame-version TAG       desired Flame runtime version (default latest)
   --image-tag TAG           operator/console/UI image tag (default release version)
   --endpoint HOST:PORT      worker FLM override (default kubeconfig IPv4:nodePort)
-  --ui-address IPV4         UI external IP (default kubeconfig server IPv4)
   --console-endpoint URL    direct console FLM endpoint (default the session-manager Service)
   --kubernetes-endpoint URL enrollment API override (default active kubeconfig server)
   --kubeconfig FILE         Kubernetes credentials for Helm installation
@@ -59,7 +58,6 @@ values=
 flame_version=latest
 endpoint=
 console_endpoint=
-ui_address=
 kubernetes_endpoint=
 kubeconfig=
 token_file=
@@ -86,7 +84,7 @@ while [ "$#" -gt 0 ]; do
         --adopt-existing) adopt=1; shift ;;
         --manage-object-cache) manage_cache=1; shift ;;
         -h|--help) usage; exit 0 ;;
-        --version|--image-tag|--artifacts-dir|--namespace|--cluster|--hostname|--values|--flame-version|--endpoint|--ui-address|--console-endpoint|--kubernetes-endpoint|--kubeconfig|--token-file|--worker|--address|--max-executors|--shims|--prefix|--systemd-dir)
+        --version|--image-tag|--artifacts-dir|--namespace|--cluster|--hostname|--values|--flame-version|--endpoint|--console-endpoint|--kubernetes-endpoint|--kubeconfig|--token-file|--worker|--address|--max-executors|--shims|--prefix|--systemd-dir)
             [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$1 requires a value"
             option="$1"; value="$2"; shift 2
             case "$option" in
@@ -94,7 +92,7 @@ while [ "$#" -gt 0 ]; do
                 --artifacts-dir) artifacts="$value" ;; --namespace) namespace="$value"; namespace_set=1 ;;
                 --cluster) cluster="$value"; cluster_set=1 ;; --hostname) hostname="$value" ;;
                 --values) values="$value" ;; --flame-version) flame_version="$value" ;;
-                --endpoint) endpoint="$value" ;; --ui-address) ui_address="$value" ;; --console-endpoint) console_endpoint="$value" ;;
+                --endpoint) endpoint="$value" ;; --console-endpoint) console_endpoint="$value" ;;
                 --kubernetes-endpoint) kubernetes_endpoint="$value" ;; --kubeconfig) kubeconfig="$value" ;;
                 --token-file) token_file="$value" ;; --worker) worker="$value" ;;
                 --address) address="$value" ;; --max-executors) max_executors="$value" ;;
@@ -171,7 +169,7 @@ if [ "$mode" = cluster ]; then
     [ -z "$token_file" ] && [ -z "$worker" ] || fail '--token-file and --worker require --join'
     for tool in helm kubectl python3; do need "$tool"; done
     kube_server="$(kube config view --minify -o 'jsonpath={.clusters[0].cluster.server}')" || fail 'cannot read the active kubeconfig server'
-    python3 - "$kube_server" "$work/kube-host" "$work/worker-host" "$endpoint" "$work/ui-address" "$ui_address" <<'PY'
+    python3 - "$kube_server" "$work/kube-host" "$work/worker-host" "$endpoint" "$work/ui-address" <<'PY'
 import ipaddress
 import json
 import socket
@@ -188,16 +186,14 @@ try:
             or (url.port is not None and not 1 <= url.port <= 65535)):
         raise ValueError()
     Path(sys.argv[2]).write_text(host)
-    ip = None
-    if not sys.argv[4] or not sys.argv[6]:
-        address = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
-        ip = ipaddress.IPv4Address(address)
+    address = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    ip = ipaddress.IPv4Address(address)
     if not sys.argv[4]:
         networks = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
         if not any(ip in ipaddress.IPv4Network(network) for network in networks):
             raise ValueError()
         Path(sys.argv[3]).write_text(str(ip))
-    ui_ip = ipaddress.IPv4Address(sys.argv[6]) if sys.argv[6] else ip
+    ui_ip = ip
     if ui_ip.is_unspecified or ui_ip.is_multicast or ui_ip.is_loopback or str(ui_ip) == '255.255.255.255':
         raise ValueError()
     Path(sys.argv[5]).write_text(str(ui_ip))

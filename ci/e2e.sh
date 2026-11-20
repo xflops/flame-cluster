@@ -23,10 +23,17 @@ cat > "$runtime/install-values.yaml" <<VALUES
 storageClass: standard
 endpoint: $node_ip:30080
 VALUES
+# Use the node-reachable API endpoint in the installer kubeconfig. Kind's host
+# kubeconfig points to loopback, which cannot be advertised to remote workers/UI.
+install_kubeconfig="$runtime/install-kubeconfig"
+(umask 077; kubectl config view --raw --minify --flatten > "$install_kubeconfig")
+install_cluster="$(kubectl config view --minify -o 'jsonpath={.clusters[0].name}')"
+kubectl --kubeconfig "$install_kubeconfig" config set-cluster "$install_cluster" \
+  --server="https://$node_ip:6443" >/dev/null
 # Exercise the public installer with this run's previously built artifacts.
 sh setup.sh --artifacts-dir "$E2E_ARTIFACTS" --hostname flame.e2e.test \
   --values "$runtime/install-values.yaml" --image-tag "sha-$GITHUB_SHA-amd64" \
-  --endpoint "$node_ip:30080" --ui-address "$node_ip" \
+  --kubeconfig "$install_kubeconfig" --endpoint "$node_ip:30080" \
   --console-endpoint https://flame-session-manager:8080 \
   --kubernetes-endpoint "https://$node_ip:6443"
 kubectl -n flame-system wait flamecluster/flame --for=condition=Ready --timeout=10m

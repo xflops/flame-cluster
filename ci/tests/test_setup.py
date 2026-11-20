@@ -179,6 +179,7 @@ esac
         result = self.run_setup('--help')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--token-file', result.stdout)
+        self.assertNotIn('--ui-address', result.stdout)
         self.assertEqual(self.operations(), '')
 
     def test_cluster_defaults_to_existing_kubeconfig_and_nodeports(self):
@@ -206,31 +207,28 @@ esac
         self.assertIn('kubernetesEndpoint=https://192.168.3.20:7443', operations)
         self.assert_ui_exposure(result, '192.168.3.20', '192.168.3.20')
 
-    def test_ui_address_override_is_independent_from_worker_frontend(self):
-        result = self.run_setup('--ui-address', '100.117.27.41')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_ui_exposure(result, '100.117.27.41', '192.168.3.10')
-        self.assertIn('endpointHost=192.168.3.10', self.operations())
-
     def test_non_lan_kubeconfig_ui_address_keeps_explicit_worker_frontend(self):
         result = self.run_setup('--endpoint', '192.168.3.10:30080', INSTALL_TEST_KUBE_SERVER='https://100.117.27.41:6443')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_ui_exposure(result, '100.117.27.41', '100.117.27.41')
         self.assertIn('endpoint=192.168.3.10:30080', self.operations())
 
-    def test_loopback_kind_kubeconfig_uses_explicit_reachable_endpoints(self):
-        result = self.run_setup('--endpoint', '192.168.3.10:30080', '--ui-address', '192.168.3.10', '--kubernetes-endpoint', 'https://192.168.3.10:6443', INSTALL_TEST_KUBE_SERVER='https://127.0.0.1:45678')
+    def test_kind_installer_uses_reachable_selected_kubeconfig(self):
+        kubeconfig = self.root / 'kind-installer-kubeconfig'
+        kubeconfig.write_text('fixture')
+        result = self.run_setup('--kubeconfig', str(kubeconfig), '--endpoint', '192.168.3.10:30080', '--kubernetes-endpoint', 'https://192.168.3.10:6443', INSTALL_TEST_KUBE_SERVER='https://192.168.3.10:6443')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_ui_exposure(result, '192.168.3.10', '127.0.0.1')
+        self.assert_ui_exposure(result, '192.168.3.10', '192.168.3.10')
+        self.assertIn(f'kubectl --kubeconfig {kubeconfig} config view --minify', self.operations())
         cluster_invocations = [line for line in self.operations().splitlines() if 'template flame-cluster ' in line or '--install flame-cluster ' in line]
         for invocation in cluster_invocations:
             self.assertIn('endpoint=192.168.3.10:30080', invocation)
             self.assertIn('kubernetesEndpoint=https://192.168.3.10:6443', invocation)
 
-    def test_invalid_ui_address_changes_nothing(self):
-        for address in ['gateway.example.test', 'http://192.168.3.10', '192.168.3.10:80', '::1', '999.1.2.3']:
+    def test_non_unicast_kubeconfig_ui_host_changes_nothing(self):
+        for address in ['127.0.0.1', '0.0.0.0', '224.0.0.1', '255.255.255.255']:
             with self.subTest(address=address):
-                result = self.run_setup('--ui-address', address)
+                result = self.run_setup('--endpoint', '192.168.3.10:30080', INSTALL_TEST_KUBE_SERVER=f'https://{address}:6443')
                 self.assertNotEqual(result.returncode, 0)
                 self.no_install()
 

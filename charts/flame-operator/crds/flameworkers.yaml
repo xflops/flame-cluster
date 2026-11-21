@@ -76,6 +76,29 @@ spec:
               cacheReady:
                 default: false
                 type: boolean
+              capacity:
+                description: Hardware capacity reported by the matched Ready FLM node. Unknown values stay null.
+                nullable: true
+                properties:
+                  cpu:
+                    description: CPU cores.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  gpu:
+                    description: GPU count, including zero on hosts without GPUs.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  memory:
+                    description: Memory in bytes.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                type: object
               conditions:
                 default: []
                 items:

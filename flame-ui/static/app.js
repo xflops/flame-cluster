@@ -58,15 +58,25 @@ const badge = label => {
   const tone = ['Ready', 'Enabled', 'Succeeded', 'Applied'].includes(label) ? 'green' : ['Open', 'Running', 'Bound'].includes(label) ? 'blue' : ['Pending', 'Binding', 'Suspending', 'Releasing', 'Deferred', 'Reconciling', 'Stale'].includes(label) ? 'orange' : ['Failed', 'Not ready'].includes(label) ? 'red' : '';
   return `<span class="badge ${tone}">${e(label)}</span>`;
 };
-const readiness = label => `<span class="readiness"><span class="ready-circle ${label === 'Ready' ? 'good' : label === 'Not ready' ? 'bad' : ''}" aria-hidden="true"></span>${e(label)}</span>`;
+const readiness = (label, compact = false) => `<span class="readiness" title="${e(label)}" role="img" aria-label="${e(label)}"><span class="ready-circle ${label === 'Ready' ? 'good' : 'bad'}" aria-hidden="true"></span><span${compact ? ' class="sr-only"' : ''}>${e(label)}</span></span>`;
 const date = value => {
   if (!value) return '—';
   const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
   return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
+const knownCapacity = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0;
+function nodeStatus(row) {
+  const capacity = row.status?.capacity;
+  const boxes = [['GPU', capacity?.gpu], ['CPU', capacity?.cpu], ['MEM', capacity?.memory]].map(([label, value]) => {
+    const formatted = knownCapacity(value) ? label === 'MEM' ? bytes(value) : f(value) : '-';
+    return `<span class="capacity-box"><span>${label}</span><strong>${e(formatted)}</strong></span>`;
+  }).join('');
+  return `<span class="node-status">${readiness(stateOf(row, 'nodes'), true)}<span class="node-capacities">${boxes}</span></span>`;
+}
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
 const cacheState = row => row.spec?.manageObjectCache === false ? 'Not managed' : row.status?.objectCache?.activeState;
+const serviceState = value => typeof value === 'string' && value ? value[0].toUpperCase() + value.slice(1) : value;
 const empty = (title, description, kind = state.view) => `<div class="empty">${icon(kind)}<h3>${e(title)}</h3><p>${e(description)}</p></div>`;
 function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th scope="col">${e(header)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`; }
 function resourceLink(row, index, subtitle = '', kind = state.view) {
@@ -154,7 +164,6 @@ function render() {
   renderNavigation();
   const view = views[state.view];
   const selected = state.connections?.find(connection => connection.id === state.connectionId);
-  const label = selected?.namespace || state.connection?.namespace || selected?.displayName || state.connection?.displayName || 'Flame';
   $('#connection-name').innerHTML = state.connections?.length
     ? state.connections.map(connection => `<option value="${e(connection.id)}">${e(connection.namespace || connection.displayName || connection.id)}</option>`).join('')
     : '<option>Loading Flames…</option>';
@@ -165,6 +174,9 @@ function render() {
   $('#page-description').textContent = view.description;
   $('#breadcrumb-detail').textContent = view.title;
   const settings = state.view === 'settings';
+  $('.data-panel').classList.toggle('settings-panel', settings);
+  $('.data-panel').setAttribute('aria-label', settings ? 'Cluster settings' : 'Resource data');
+  $('#content').classList.toggle('settings-grid', settings);
   $('#section-title').textContent = settings ? 'Cluster connection' : `All ${view.title.toLowerCase()}`;
   $('#row-count').hidden = settings;
   $('.filters').hidden = settings;
@@ -188,20 +200,18 @@ function render() {
     return;
   }
   if (settings) {
+    const configuration = state.connection?.configuration || window.FLAME_CLUSTER_CONFIGS?.[state.connectionId];
     $('#content').innerHTML = state.connection
-      ? table(['Setting', 'Value'], [
-        `<tr><td>Cluster</td><td>${e(label)}</td></tr>`,
-        `<tr><td>FLM endpoint</td><td>${e(state.connection.endpoint)}</td></tr>`,
-      ])
+      ? `<section class="settings-card" aria-label="Cluster configuration"><h3>Cluster configuration</h3><p class="mono">flame-cluster.yaml</p><pre><code id="cluster-config">${e(configuration ? JSON.stringify(configuration, null, 2) : 'Cluster configuration is unavailable.')}</code></pre></section>`
       : empty(errors.length ? 'Unable to load settings' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Connection settings will appear here shortly.');
     const clientConfigAvailable = state.connection?.clientConfigAvailable ?? selected?.clientConfigAvailable;
-    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Client configuration"><h3>Client configuration</h3><p>${clientConfigAvailable
+    $('#content').insertAdjacentHTML('beforeend', `<section class="settings-card" aria-label="Client configuration"><h3>Client configuration</h3><p>${clientConfigAvailable
       ? `Download the Flame client configuration for ${e(selected?.namespace || selected?.displayName || state.connectionId)}.`
       : 'Client configuration is unavailable for this Flame.'}</p><button class="button" id="download-config" ${!clientConfigAvailable || state.downloading ? 'disabled' : ''}>${state.downloading ? 'Downloading…' : 'Download flame.yaml'}</button><p id="download-status" role="status">${e(state.downloadStatus)}</p></section>`);
     const downloadConnectionId = state.connectionId;
     $('#download-config').addEventListener('click', () => downloadClientConfig(downloadConnectionId));
     const join = state.join && Date.parse(state.join.expiresAt) > Date.now() ? state.join : null;
-    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host. It downloads the installer; Flmlet installs and configures its Flame runtime.</p>${join
+    $('#content').insertAdjacentHTML('beforeend', `<section class="settings-card" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host. It downloads the installer; Flmlet installs and configures its Flame runtime.</p>${join
       ? `<pre><code id="join-command">${e(join.command)}</code></pre><p>Expires ${e(new Date(join.expiresAt).toLocaleString())}. Refresh to get the latest command.</p><button class="button" id="copy-join">Copy join command</button><span id="copy-status" role="status"></span>`
       : `<p>${e(state.errors.join || (state.loading ? 'Loading join command…' : 'Join command unavailable. Refresh to retry.'))}</p>`}</section>`);
     $('#copy-join')?.addEventListener('click', async () => {
@@ -232,7 +242,7 @@ function render() {
     $('#content').innerHTML = table(['Session', 'State', 'Application', 'Task progress', 'Created', 'Actions'], displayed.map((row, i) => `<tr><td>${resourceLink(row, i)}</td><td>${badge(stateOf(row, 'sessions'))}</td><td>${e(row.spec?.application)}</td><td>${sessionProgress(row.status)}</td><td>${date(row.status?.creation_time)}</td><td>${sessionActions(row, i)}</td></tr>`));
   } else if (state.view === 'nodes') {
     $('#content').innerHTML = table(['Node', 'Status', 'Address', 'FEM', 'Cache', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
-      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : undefined)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${e(row.spec?.address)}</td><td>${e(row.status?.fem?.activeState)}</td><td>${e(cacheState(row))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
+      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : undefined)}</td><td>${nodeStatus(row)}</td><td>${e(row.spec?.address)}</td><td>${e(serviceState(row.status?.fem?.activeState))}</td><td>${e(serviceState(cacheState(row)))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
     ));
   } else {
     $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));
@@ -304,7 +314,7 @@ function openDetails(row) {
     if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
   } else if (state.view === 'nodes') {
     detail += properties([['Cluster', row.metadata?.namespace], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash]]);
-    detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['FEM', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(report?.activeState)}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
+    detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['FEM', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(serviceState(report?.activeState))}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
     if (row.status?.conditions?.length) detail += '<div class="drawer-section"><h3>Conditions</h3></div>' + table(['Condition', 'Status', 'Reason', 'Message'], row.status.conditions.map(condition => `<tr><td>${e(condition.type)}</td><td>${e(condition.status)}</td><td>${e(condition.reason)}</td><td>${e(condition.message)}</td></tr>`));
     if (!row.status || !Object.keys(row.status).length) detail += '<p class="detail-note">Worker status has not been reported yet.</p>';
   } else if (state.view === 'executors') {

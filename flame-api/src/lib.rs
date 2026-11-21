@@ -227,12 +227,28 @@ pub struct FlameWorkerStatus {
     pub hostname: Option<String>,
     #[serde(default)]
     pub registered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<NodeCapacity>,
     #[serde(default)]
     pub cache_ready: bool,
     #[serde(default)]
     pub fem: HostServiceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_cache: Option<HostServiceStatus>,
+}
+
+/// Hardware capacity reported by the matched Ready FLM node. Unknown values stay null.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+pub struct NodeCapacity {
+    /// CPU cores.
+    #[serde(default)]
+    pub cpu: Option<u64>,
+    /// GPU count, including zero on hosts without GPUs.
+    #[serde(default)]
+    pub gpu: Option<u64>,
+    /// Memory in bytes.
+    #[serde(default)]
+    pub memory: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
@@ -273,6 +289,35 @@ mod schema_tests {
         assert!(gateway.get("serviceAnnotations").is_some());
     }
     #[test]
+    fn worker_capacity_is_optional_and_members_are_unsigned_nullable_values() {
+        let old = serde_json::to_value(FlameWorkerStatus::default()).unwrap();
+        assert!(old.get("capacity").is_none());
+        assert!(
+            serde_json::from_value::<FlameWorkerStatus>(old)
+                .unwrap()
+                .capacity
+                .is_none()
+        );
+        let capacity = NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: None,
+        };
+        assert_eq!(
+            serde_json::to_value(capacity).unwrap(),
+            serde_json::json!({"cpu":8,"gpu":0,"memory":null})
+        );
+        let crd = serde_json::to_value(FlameWorker::crd()).unwrap();
+        let fields = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]
+            ["properties"]["capacity"];
+        for field in ["cpu", "gpu", "memory"] {
+            assert_eq!(fields["properties"][field]["minimum"].as_f64(), Some(0.0));
+            assert_eq!(fields["properties"][field]["nullable"], true);
+        }
+        assert!(fields.get("required").is_none());
+    }
+
+    #[test]
     fn worker_crd_separates_sre_desired_state_and_observed_host_health() {
         let crd = serde_json::to_value(FlameWorker::crd()).unwrap();
         assert_eq!(crd["spec"]["group"], "flame.xflops.io");
@@ -303,6 +348,7 @@ mod schema_tests {
         for field in [
             "fem",
             "registered",
+            "capacity",
             "cacheReady",
             "configHash",
             "lastHeartbeatTime",

@@ -651,12 +651,17 @@ fn registration_checks_later_native_pages_and_matches_actual_hostname() {
     host.node_pages.insert(1,json!({"items":(0..100).map(|i|json!({"hostname":format!("other-{i}"),"state":"Ready"})).collect::<Vec<_>>()}));
     host.node_pages.insert(
         2,
-        json!({"items":[{"name":"node-id","hostname":"actual-host","state":"Ready"}]}),
+        json!({"items":[{"name":"node-id","hostname":"actual-host","state":"Ready", "cpu":16,"gpu":0,"memory":34359738368u64}]}),
     );
-    assert!(
-        run(&mut host, &settings(), &worker(), &cluster())
-            .unwrap()
-            .ready
+    let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    assert!(outcome.ready);
+    assert_eq!(
+        outcome.status.unwrap().capacity,
+        Some(flame_api::NodeCapacity {
+            cpu: Some(16),
+            gpu: Some(0),
+            memory: Some(34359738368),
+        })
     );
     assert_eq!(
         host.calls
@@ -1221,4 +1226,124 @@ fn partial_normalization_during_upgrade_reinstalls_even_when_owned_drop_ins_surv
     }
     assert!(!flmlet::configure(&mut host, &settings, &worker(), &cluster).unwrap());
     assert_eq!(host.bootstraps.len(), 3);
+}
+
+#[test]
+fn capacity_uses_only_matching_ready_node_and_preserves_unknown_values() {
+    for (capacity, expected) in [
+        (
+            json!({"cpu":8,"gpu":0,"memory":4096}),
+            Some(json!({"cpu":8,"gpu":0,"memory":4096})),
+        ),
+        (json!({"cpu":-1,"gpu":"2","memory":1.5}), None),
+        (
+            json!({"cpu":8,"gpu":null,"memory":false}),
+            Some(json!({"cpu":8,"gpu":null,"memory":null})),
+        ),
+        (json!({}), None),
+        (Value::Null, None),
+    ] {
+        let mut host = FakeHost::healthy();
+        host.registration = json!({"items":[
+            {"hostname":"other-host","state":"Ready","capacity":{"cpu":999,"gpu":999,"memory":999}},
+            {"spec":{"hostname":"actual-host"},"status":{"state":1,"capacity":capacity}}
+        ]});
+        let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+        assert!(
+            outcome.ready,
+            "unknown capacity must not change registration"
+        );
+        assert_eq!(
+            outcome
+                .status
+                .unwrap()
+                .capacity
+                .map(|value| serde_json::to_value(value).unwrap()),
+            expected
+        );
+    }
+}
+
+#[test]
+fn stale_capacity_is_cleared_when_registration_is_lost_disabled_or_reconcile_fails() {
+    let mut worker = worker();
+    worker.status = Some(flame_api::FlameWorkerStatus {
+        capacity: Some(flame_api::NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: Some(4096),
+        }),
+        config_hash: "keep-existing-hash".into(),
+        ..Default::default()
+    });
+    let mut host = FakeHost::healthy();
+    host.registration = json!({"items":[
+        {"hostname":"other-host","state":"Ready","capacity":{"cpu":999}},
+        {"hostname":"actual-host","state":"NotReady","capacity":{"cpu":8}}
+    ]});
+    let status = run(&mut host, &settings(), &worker, &cluster())
+        .unwrap()
+        .status
+        .unwrap();
+    assert!(!status.registered);
+    assert!(status.capacity.is_none());
+    worker.spec.disabled = true;
+    assert!(
+        run(&mut host, &settings(), &worker, &cluster())
+            .unwrap()
+            .status
+            .unwrap()
+            .capacity
+            .is_none()
+    );
+    let failed = flmlet::failed_status(&worker, "inventory unavailable");
+    assert!(failed.capacity.is_none());
+    assert_eq!(failed.config_hash, "keep-existing-hash");
+}
+
+#[test]
+fn native_flat_node_capacity_matches_observed_flmctl_output() {
+    let mut host = FakeHost::healthy();
+    // Native list -n output uses top-level measurements, not a capacity object.
+    host.registration = json!([{
+        "name":"flm-worker-01", "hostname":"flm-worker-01", "state":"Ready",
+        "cpu":8, "memory":16613277696u64, "gpu":0
+    }]);
+    // This entry belongs to another actual hostname and must never supply capacity.
+    assert!(
+        run(&mut host, &settings(), &worker(), &cluster())
+            .unwrap()
+            .status
+            .unwrap()
+            .capacity
+            .is_none()
+    );
+    host.registration[0]["hostname"] = json!("actual-host");
+    let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    assert!(outcome.ready);
+    assert_eq!(
+        outcome.status.unwrap().capacity,
+        Some(flame_api::NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: Some(16613277696),
+        })
+    );
+    // Wrapper values cannot override flat measurements, including malformed ones.
+    host.registration[0]["capacity"] = json!({"cpu":999,"gpu":999,"memory":999});
+    host.registration[0]["cpu"] = json!(-1);
+    let capacity = run(&mut host, &settings(), &worker(), &cluster())
+        .unwrap()
+        .status
+        .unwrap()
+        .capacity
+        .unwrap();
+    assert_eq!(
+        capacity,
+        flame_api::NodeCapacity {
+            cpu: None,
+            gpu: Some(0),
+            memory: Some(16613277696)
+        }
+    );
 }

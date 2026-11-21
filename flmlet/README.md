@@ -9,6 +9,13 @@ object cache using systemctl. It stops and disables the object cache when it is
 not requested.
 Flmlet does not poll registries, install Kubernetes, or request Kubernetes CSRs.
 
+During reconciliation, flmlet uses the existing FLM node-inventory check to report
+`FlameWorker.status.capacity` for its actual hostname when that node is Ready.
+CPU is a core count, GPU is a device count (including zero), and memory is bytes.
+Missing or malformed measurements remain unknown; they do not prevent registration.
+Capacity clears when registration is lost, the worker is disabled, or reconciliation
+fails and its status can still be written. The UI reads this worker status.
+
 The operator renews a cluster join token every fifteen minutes. Copy the current
 join command from **Settings → Join a node** in the UI and run it on the prepared
 worker host. The command fetches the hosted installer; no local `setup.sh` is

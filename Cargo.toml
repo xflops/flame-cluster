@@ -1,5 +1,5 @@
 [workspace]
-members = ["flame-api", "flame-operator", "flame-console", "flmlet"]
+members = ["flame-api", "flame-operator", "flame-cluster", "flmlet"]
 resolver = "3"
 
 [workspace.package]

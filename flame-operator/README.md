@@ -13,13 +13,21 @@ The default GatewayClass is `flame-envoy`, issuer is `flame-client-ca`, and Envo
 controller namespace is `envoy-gateway-system`; set the gateway fields to match
 the installation.
 
+The combined cluster chart generates one-based indexed resources, such as
+`flame-ns-1/flame-1`, from its `flames` list. Each Flame has its own namespace;
+its client bundle, workers, join Secret, and enrollment Roles stay there.
+
 For each cluster, the operator manages one session-manager Deployment, a
 retained PVC, configuration, a NodePort Service, external cache Services and
 EndpointSlices, cert-manager Certificates, EnvoyProxy, Gateway, HTTPRoutes, and
 client identity policies. It registers hosts through rotating join tokens and
-issues worker credentials. SREs prepare the host runtime; `setup.sh --join TOKEN`
-creates a namespaced `FlameWorker` and generates FEM configuration. The local
-`flmlet` reconciles host systemd services and reports actual service and Flame
+issues worker credentials. SREs prepare host workload runtimes and networking;
+`setup.sh --join TOKEN`
+creates a namespaced `FlameWorker` and generates FEM configuration. Copy the
+current command and expiration from the UI's **Settings → Join a node** section.
+The local
+`flmlet` installs FEM using upstream Flame setup with service startup suppressed,
+prepares the cluster configuration, then starts and reconciles host systemd services and reports actual service and Flame
 registration health.
 
 `spec.version` selects the session-manager release and defaults to `latest`.
@@ -58,10 +66,16 @@ certificate and distributes only validated public CA certificates through
 An optional `spec.endpoint: ip:port` selects an RFC 1918 LAN address and NodePort
 and publishes frontend/backend endpoints in status. SREs choose which routable
 Kubernetes node workers connect to; the operator does not discover or manage nodes.
+The default `sh setup.sh` flow derives this address and `spec.kubernetesEndpoint`
+from the active kubeconfig, without requiring a values file. Each chart
+`flames[]` entry combines `endpointHost` with `nodePort` unless `endpoint` is
+explicitly supplied.
 
-`gateway.hostname` is the client TLS hostname; rendering and reconciliation do
-not resolve it through DNS. Clients must resolve it to a reachable Kubernetes
-node address. Optional `gateway.ingressIp` records an advertised IPv4 address
+`gateway.hostname` accepts a DNS hostname or IPv4 address; rendering and
+reconciliation do not resolve it through DNS. DNS hostnames use DNS certificate
+SANs and hostname-constrained listeners/routes. IPv4 addresses use IP SANs and
+listeners/routes without hostname constraints. Clients must reach the selected
+Kubernetes node address. Optional `gateway.ingressIp` records an advertised IPv4 address
 in status and never binds Envoy to a host interface. Envoy uses a NodePort
 Service with `externalTrafficPolicy: Cluster`, so any reachable node can forward
 to Envoy. `nodeSelector` is inherited from the session manager.
@@ -74,6 +88,10 @@ All four ports must be unique across FlameClusters, regardless of hostname/IP.
 The controller generates `<cluster>-client` with a standalone `flame.yaml` and
 CA/certificate/private-key files after cert-manager issues the client identity.
 The Secret name is reported in `status.clientSecret` and refreshed on renewal.
+The client certificate lasts one year (`8760h`), renewing 30 days (`720h`) before
+expiry, subject to the issuer honoring that lifetime. Exported `flame.yaml`
+copies must be refreshed separately. The native FLM server certificate retains
+its 24-hour lifetime and renews eight hours before expiry.
 Treat it as a credential and distribute it through SRE-managed access controls.
 Client URI SANs bind namespace, name and object UID; a certificate for a different
 FlameCluster cannot authenticate even when both use the same trusted issuer.

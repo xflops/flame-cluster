@@ -1,5 +1,5 @@
 [package]
-name = "flame-console"
+name = "flame-cluster"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 axum = "0.8"
 chrono.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true

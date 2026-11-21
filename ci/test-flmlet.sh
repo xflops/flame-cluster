@@ -26,7 +26,7 @@ wait_credentials_removed() {
 worker_pid() { worker_exec systemctl show "$1" --property=MainPID --value; }
 worker_once() {
   timeout 75 docker exec "$worker" /usr/local/flame/bin/flmlet --worker "$worker" \
-    --namespace flame-system --prefix /usr/local/flame \
+    --namespace "$flame_namespace" --prefix /usr/local/flame \
     --kubeconfig /usr/local/flame/conf/flmlet/kubeconfig "$@"
 }
 uid="$("${kube[@]}" get flameworker "$worker" -o jsonpath='{.metadata.uid}')"
@@ -36,10 +36,10 @@ wait_worker_ready "$runtime/flmlet-before.json"
 before_fem="$(worker_pid flame-executor-manager.service)"
 before_cache="$(worker_pid flame-object-cache.service)"
 [[ "$before_fem" -gt 0 && "$before_cache" -gt 0 ]]
-worker_exec sha256sum /usr/local/flame/conf/flmlet/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-before.txt"
+worker_exec sha256sum /usr/local/flame/conf/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-before.txt"
 worker_once --check > "$runtime/flmlet-preview.json"
 worker_once --once > "$runtime/flmlet-once.log" 2>&1
-worker_exec sha256sum /usr/local/flame/conf/flmlet/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-after.txt"
+worker_exec sha256sum /usr/local/flame/conf/flame-cluster.yaml /usr/local/flame/conf/flmlet-client.yaml /usr/local/flame/conf/flmlet.env /usr/local/flame/conf/flmlet/control-plane-ca.crt > "$runtime/flmlet-config-after.txt"
 cmp "$runtime/flmlet-config-before.txt" "$runtime/flmlet-config-after.txt"
 [[ "$(worker_pid flame-executor-manager.service)" == "$before_fem" ]]
 [[ "$(worker_pid flame-object-cache.service)" == "$before_cache" ]]
@@ -74,9 +74,9 @@ umask 077
 mkdir -p "$runtime/secrets"
 bootstrap_token "$runtime/secrets/bootstrap-before.token"
 identity_before="$(worker_exec sha256sum /usr/local/flame/conf/flmlet/kubeconfig | cut -d' ' -f1)"
-"${kube[@]}" patch secret flame-join --type merge -p '{"stringData":{"expiresAt":"2000-01-01T00:00:00Z"}}' >/dev/null
+"${kube[@]}" patch secret "$flame_name-join" --type merge -p '{"stringData":{"expiresAt":"2000-01-01T00:00:00Z"}}' >/dev/null
 for attempt in {1..90}; do
-  if "${kube[@]}" get secret flame-join -o json | jq -er '.data.token|@base64d' > "$runtime/secrets/bootstrap-after.token" \
+  if "${kube[@]}" get secret "$flame_name-join" -o json | jq -er '.data.token|@base64d' > "$runtime/secrets/bootstrap-after.token" \
     && ! cmp -s "$runtime/secrets/bootstrap-before.token" "$runtime/secrets/bootstrap-after.token"; then break; fi
   [[ "$attempt" != 90 ]] || exit 1
   sleep 2
@@ -117,7 +117,7 @@ worker_exec systemctl is-enabled --quiet flame-object-cache.service
 wait_stopped
 wait_credentials_removed "$uid"
 worker_exec systemctl is-active --quiet flmlet.service
-worker_exec test -s /usr/local/flame/conf/flmlet/flame-cluster.yaml
+worker_exec test -s /usr/local/flame/conf/flame-cluster.yaml
 python3 - "$runtime" "$before_fem" "$after_fem" "$before_cache" "$after_cache" <<'PY'
 import json,sys
 from pathlib import Path

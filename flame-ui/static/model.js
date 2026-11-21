@@ -1,8 +1,9 @@
 export const views = {
   nodes: { title: 'Nodes', description: 'The machines powering your cluster.', states: ['Unknown', 'Ready', 'Not ready'] },
+  executors: { title: 'Executors', description: 'See where application services are running.', states: ['Unknown', 'Void', 'Idle', 'Binding', 'Bound', 'Unbinding', 'Releasing', 'Released'] },
   applications: { title: 'Applications', description: 'Your services and runtimes, ready for work.', states: ['Enabled', 'Disabled'] },
   sessions: { title: 'Sessions', description: 'Follow workloads from the queue to completion.', states: ['Open', 'Closed', 'Suspending', 'Suspended'] },
-  executors: { title: 'Executors', description: 'See where application services are running.', states: ['Unknown', 'Void', 'Idle', 'Binding', 'Bound', 'Unbinding', 'Releasing', 'Released'] },
+  settings: { title: 'Settings', description: 'Connection settings for your cluster.', states: [] },
 };
 export const taskStates = ['Pending', 'Running', 'Succeeded', 'Failed', 'Cancelled'];
 export const escapeHtml = value => String(value ?? '—').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

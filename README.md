@@ -10,8 +10,8 @@ selection is configurable; worker-network isolation remains an SRE responsibilit
 | --- | --- |
 | `flame-api` | Own FlameCluster/FlameWorker definitions, validation, and CRD generation. |
 | [flame-operator](flame-operator/README.md) | Reconcile Flame session-manager storage, services, certificates and gateway routes. |
-| [flmlet](flmlet/README.md) | Reconcile SRE-installed FEM and optional object-cache systemd services on a host. |
-| [flame-console](flame-console/README.md) | Read nodes, applications, sessions, executors and tasks directly from a configured FLM; forward session actions. |
+| [flmlet](flmlet/README.md) | Install FEM through upstream Flame setup, configure it, and reconcile host services. |
+| [flame-cluster](flame-cluster/README.md) | Read nodes, applications, sessions, executors and tasks directly from a configured namespaced FLMs; forward selected session actions. |
 | [flame-ui](flame-ui/README.md) | Serve the Flame console at `/`. |
 
 There is no platform operator, logical manager, Terraform, Ansible,
@@ -25,23 +25,20 @@ The installer uses Helm for the control plane in an existing Kubernetes cluster:
 
 ```sh
 curl -fsSLo setup.sh https://xflops.io/cluster/setup.sh
-sh setup.sh --hostname flame.example.com \
-  --kubernetes-endpoint https://kubernetes.example.com:6443 --values flame-values.yaml
+sh setup.sh
 ```
 
-The values file sets the worker-reachable FLM `endpoint` (LAN IP and frontend
-NodePort). SREs prepare the dependencies described below. The operator generates
-a cluster join token and renews it every 15 minutes:
-
-```sh
-kubectl -n flame-system get secret flame-join \
-  -o jsonpath='{.data.token}' | base64 --decode
-# On the prepared worker host:
-sudo sh setup.sh --join '<token>'
-```
+Setup uses the active kubeconfig server for Kubernetes access and the
+session-manager/cache NodePort host. Defaults require no values file; `--values`
+is optional. SREs prepare the dependencies described below. The operator generates
+a cluster join token and renews it every 15 minutes. Open the UI at `/`, select
+a namespace in the selector, open **Settings**, and copy the **Join a node** command. Run it on the prepared worker
+host with `setup.sh` available; no `kubectl` token lookup is needed. Flmlet runs
+upstream `flame/setup.sh --join` to install FEM and its systemd units, then writes
+the cluster config and restarts FEM with that configuration.
 
 The installer creates the FlameWorker and generates
-`conf/flmlet/flame-cluster.yaml` for FEM. No worker CR is needed in advance.
+`conf/flame-cluster.yaml` for FEM. No worker CR is needed in advance.
 Joined workers keep their own credentials when the join token renews.
 See [deployment](docs/deployment.md) for host prerequisites and options.
 
@@ -53,29 +50,35 @@ its trusted CA in `data["ca.crt"]`. The Envoy controller namespace is
 
 The Envoy gateway exposes session traffic on NodePort `30443` and cache traffic
 on NodePort `31443` by default, reachable through any routable Kubernetes node.
-SREs map `gateway.hostname` to their selected node in DNS. Envoy uses a NodePort
-Service rather than binding host ports or a node IP; operator-side DNS resolution
-is unnecessary. Reserve unique ports across clusters, including the
+Setup uses the kubeconfig server host for both endpoints. IPv4 hosts use IP
+certificates and need no new DNS record; a DNS hostname must resolve to a
+reachable node. Envoy uses a NodePort Service. Reserve unique ports across clusters, including the
 session-manager pair `30080`/`30081`. All four ports are configurable in Helm
 values; `gateway.ingressIp` is optional advertised-address metadata only.
 
-```sh
-helm upgrade --install flame-operator charts/flame-operator \
-  --namespace flame-system --create-namespace
-helm upgrade --install flame charts/flame-cluster --namespace flame-system \
-  --set gateway.hostname=flame.example.com
-helm upgrade --install flame-console charts/flame-console --namespace flame-system \
-  --set flame.endpoint=https://flame-session-manager:8080 \
-  --set flame.tls.caConfigMap=flame-client-ca
-helm upgrade --install flame-ui charts/flame-ui --namespace flame-system
-kubectl -n flame-system port-forward service/flame-ui 8080:80
-```
+The management Service and Deployment are `cluster`; its image is
+`docker.io/xflops/flame-cluster`. The combined `flame-cluster` chart always runs
+that service. Its settings live under `cluster`, and `flames` is an ordered list
+of Flame configurations. The default first resource is `flame-ns-1/flame-1`;
+further entries receive indexed names and separate namespaces and ports.
 
-Open `http://localhost:8080/`. The console talks directly to FLM and has no
-Kubernetes client, service-account token or Kubernetes RBAC. For an existing FLM,
-install just the console/UI charts and point `flame.endpoint` to that service.
-See [Helm values and SRE prerequisites](docs/deployment.md) for TLS, image selection,
-external cache endpoints, CRD upgrades and uninstall behavior.
+Each namespace owns its FlameCluster, FlameWorkers, client credentials, and join
+Secret. Worker permissions and gateway client identities are scoped to that
+Flame. The management API may read only the configured exact join Secrets; it
+cannot list Secrets or read client private keys.
+
+Open `http://<kubeconfig-server-ip>/`. Setup derives the UI external IP and host
+allowlist directly from kubeconfig, without a UI-address flag or port-forward.
+The selector shows namespaces only and opens the first configured Flame by
+default; it has no All clusters option or aggregate page. Navigation is Nodes →
+Executors → Applications → Sessions → Settings, with Compact density throughout.
+
+The generated `flame.yaml` client credential lasts one year, with renewal 30 days
+before expiry. Exported copies need a separate refresh. Node join tokens keep
+their separate 15-minute rotation. The backend connects directly to in-cluster
+FLM Services; only remote browser/administrative traffic uses Tailscale.
+See [deployment and configuration](docs/deployment.md) for multiple Flames,
+namespace isolation, TLS, external FLMs, CRD upgrades, and storage retention.
 
 ## Development
 
@@ -85,10 +88,10 @@ Rust 1.95+, Node.js LTS, and Helm are required.
 bash ci/check.sh
 (cd flame-ui && npm ci && npm test)
 (cd flame-ui && npx playwright install chromium && npm run test:browser)
-FLAME_ENDPOINT=https://192.168.10.10:30080 FLAME_CA_FILE=ca.crt cargo run -p flame-console
+FLAME_ENDPOINT=https://192.168.10.10:30080 FLAME_CA_FILE=ca.crt cargo run -p flame-cluster
 ```
 
-Build the `flame-operator`, `flame-console` and `flame-ui` targets in the root
+Build the `flame-operator`, `flame-cluster` and `flame-ui` targets in the root
 Dockerfile. All image references use upstream registries; SREs choose the image
 repositories/tags in Helm values and the FlameCluster resource.
 
@@ -102,5 +105,5 @@ the SRE for its own test dependencies; production charts never install them.
 Only successful main runs publish the tested images, worker binaries, Helm charts
 and installer. New merges cancel older
 main runs. Publishing needs `DOCKER_HUB_USERNAME` and `DOCKER_HUB_PAT` configured
-for the `xflops/flame-operator`, `xflops/flame-console`, and `xflops/flame-ui` repositories.
+for the `xflops/flame-operator`, `xflops/flame-cluster`, and `xflops/flame-ui` repositories.
 `XFLOPS_CLUSTER_TOKEN` is the website publishing Actions secret.

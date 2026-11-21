@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseRoute, views, stateOf, bytes, escapeHtml } from '../static/model.js';
 
-test('routes expose only direct Flame resources with applications as the default', () => {
+test('routes expose Flame resources and settings with applications as the default', () => {
   for (const view of Object.keys(views)) assert.equal(parseRoute(`#/${view}`), view);
-  for (const hash of ['', '#/settings', '#/clusters/example/nodes', '#/unknown', '#/sessions/tasks']) assert.equal(parseRoute(hash), 'applications');
+  assert.deepEqual(Object.keys(views), ['nodes', 'executors', 'applications', 'sessions', 'settings']);
+  for (const hash of ['', '#/clusters/example/nodes', '#/unknown', '#/sessions/tasks']) assert.equal(parseRoute(hash), 'applications');
 });
 test('state labels retain unknown and missing upstream status', () => {
   assert.equal(stateOf({status:{state:0}}, 'sessions'), 'Open');

@@ -1,0 +1,13 @@
+{{- range $flame := (include "flame-cluster.flames" . | fromJsonArray) }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $flame.namespace }}
+  annotations:
+    meta.helm.sh/release-name: {{ $.Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ $.Release.Namespace | quote }}
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+{{- end }}

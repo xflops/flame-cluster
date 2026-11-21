@@ -3,7 +3,7 @@ set -euo pipefail
 : "${ARCH:?}" "${GITHUB_SHA:?}" "${RUNNER_TEMP:?}"
 [[ "$ARCH" == amd64 || "$ARCH" == arm64 ]]
 images=()
-for component in flame-operator flame-console flame-ui; do
+for component in flame-operator flame-cluster flame-ui; do
   image="xflops/$component:sha-$GITHUB_SHA-$ARCH"
   docker buildx build --platform "linux/$ARCH" --target "$component" --tag "$image" --load --provenance=false .
   test "$(docker image inspect "$image" --format '{{.Architecture}}')" = "$ARCH"

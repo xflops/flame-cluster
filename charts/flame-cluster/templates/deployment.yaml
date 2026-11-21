@@ -1,0 +1,166 @@
+{{- $flames := include "flame-cluster.flames" . | fromJsonArray -}}
+{{- $managed := gt (len $flames) 0 -}}
+{{- $tls := deepCopy .Values.cluster.flame.tls -}}
+{{- $joinSecret := .Values.cluster.join.secretName -}}
+{{- $endpoint := .Values.cluster.flame.endpoint -}}
+{{- if $managed -}}
+{{- $tls = dict -}}
+{{- $joinSecret = "" -}}
+{{- else -}}
+{{- $endpoint = required "cluster.flame.endpoint is required when flames is empty" $endpoint -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flame-cluster.fullname" . }}
+  labels:
+    {{- include "flame-cluster.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.cluster.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: cluster
+  template:
+    metadata:
+      annotations:
+        checksum/connections: {{ include "flame-cluster.connections" . | sha256sum }}
+      labels:
+        {{- include "flame-cluster.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "flame-cluster.fullname" . }}
+      automountServiceAccountToken: {{ $managed }}
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      {{- with .Values.cluster.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: flame-cluster
+          image: {{ printf "%s:%s" .Values.cluster.image.repository .Values.cluster.image.tag | quote }}
+          imagePullPolicy: {{ .Values.cluster.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - {name: CONSOLE_BIND, value: "0.0.0.0:3000"}
+            - name: CONSOLE_ALLOWED_HOSTS
+              value: {{ join "," (required "cluster.security.allowedHosts must contain trusted API/UI hostnames" .Values.cluster.security.allowedHosts) | quote }}
+            {{- if $managed }}
+            - {name: FLAME_CONNECTIONS_FILE, value: "/etc/flame/connections.json"}
+            {{- else }}
+            - name: FLAME_ENDPOINT
+              value: {{ $endpoint | quote }}
+            - name: FLAME_NAME
+              value: {{ default "Flame" .Values.cluster.flame.name | quote }}
+            {{- end }}
+            {{- if $joinSecret }}
+            - {name: FLAME_JOIN_TOKEN_FILE, value: "/etc/flame/join/token"}
+            - {name: FLAME_JOIN_EXPIRY_FILE, value: "/etc/flame/join/expiresAt"}
+            {{- end }}
+            {{- with $tls.domain }}
+            - {name: FLAME_TLS_DOMAIN, value: {{ . | quote }}}
+            {{- end }}
+            {{- if or $tls.caConfigMap $tls.secretName }}
+            {{- if or $tls.caConfigMap $tls.caKey }}
+            - {name: FLAME_CA_FILE, value: "/etc/flame/tls/ca.crt"}
+            {{- end }}
+            {{- if and $tls.secretName (or $tls.certKey $tls.keyKey) }}
+            - {name: FLAME_CERT_FILE, value: "/etc/flame/tls/tls.crt"}
+            - {name: FLAME_KEY_FILE, value: "/etc/flame/tls/tls.key"}
+            {{- end }}
+            {{- end }}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            {{- toYaml .Values.cluster.resources | nindent 12 }}
+          volumeMounts:
+            - name: temporary
+              mountPath: /tmp
+            {{- if $managed }}
+            - {name: connections, mountPath: /etc/flame/connections.json, subPath: connections.json, readOnly: true}
+            {{- range $index, $flame := $flames }}
+            - {name: flame-{{ $index }}, mountPath: {{ printf "/etc/flame/connections/%s" $flame.name | quote }}, readOnly: true}
+            {{- end }}
+            {{- end }}
+            {{- if $joinSecret }}
+            - {name: flame-join, mountPath: /etc/flame/join, readOnly: true}
+            {{- end }}
+            {{- if or $tls.caConfigMap $tls.secretName }}
+            - {name: flame-tls, mountPath: /etc/flame/tls, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: temporary
+          emptyDir: {}
+        {{- if $managed }}
+        - name: connections
+          configMap:
+            name: {{ printf "%s-connections" (include "flame-cluster.fullname" .) }}
+        {{- range $index, $flame := $flames }}
+        - name: flame-{{ $index }}
+          projected:
+            sources:
+              - configMap:
+                  name: {{ $flame.gateway.issuerName | quote }}
+                  items:
+                    - {key: ca.crt, path: ca.crt}
+        {{- end }}
+        {{- end }}
+        {{- if $joinSecret }}
+        - name: flame-join
+          secret:
+            secretName: {{ $joinSecret | quote }}
+            optional: true
+            items:
+              - {key: token, path: token}
+              - {key: expiresAt, path: expiresAt}
+        {{- end }}
+        {{- if or $tls.caConfigMap $tls.secretName }}
+        - name: flame-tls
+          projected:
+            sources:
+              {{- if $tls.caConfigMap }}
+              - configMap:
+                  name: {{ $tls.caConfigMap | quote }}
+                  items:
+                    - {key: {{ required "flame.tls.caKey is required with caConfigMap" $tls.caKey | quote }}, path: ca.crt}
+              {{- end }}
+              {{- if and $tls.secretName (or (and (not $tls.caConfigMap) $tls.caKey) $tls.certKey $tls.keyKey) }}
+              - secret:
+                  name: {{ $tls.secretName | quote }}
+                  items:
+                    {{- if and (not $tls.caConfigMap) $tls.caKey }}
+                    - {key: {{ $tls.caKey | quote }}, path: ca.crt}
+                    {{- end }}
+                    {{- if or $tls.certKey $tls.keyKey }}
+                    - {key: {{ required "flame.tls.certKey is required with keyKey" $tls.certKey | quote }}, path: tls.crt}
+                    - {key: {{ required "flame.tls.keyKey is required with certKey" $tls.keyKey | quote }}, path: tls.key}
+                    {{- end }}
+              {{- end }}
+        {{- end }}
+      {{- with .Values.cluster.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

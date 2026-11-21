@@ -1,23 +1,74 @@
-nameOverride: flame
-version: latest
-endpoint: ""
-kubernetesEndpoint: ""
-rolloutRevision: ""
-image: docker.io/xflops/flame-session-manager:latest
-nodePort: 30080
-storageSize: 20Gi
-storageClass: ""
-existingClaim: ""
-resources:
-  requests: {cpu: "1", memory: 1Gi}
-  limits: {cpu: "4", memory: 8Gi}
-nodeSelector: {}
-cacheEndpoints: []
-gateway:
-  hostname: ""
-  sessionPort: 30443
-  cachePort: 31443
-  className: flame-envoy
-  envoyNamespace: envoy-gateway-system
-  issuerName: flame-client-ca
-  clientAuth: true
+# The management service is always installed.
+cluster:
+  fullnameOverride: ""
+  image:
+    repository: docker.io/xflops/flame-cluster
+    tag: latest
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 512Mi
+  replicaCount: 1
+  security:
+    # Add the exact UI/SSO ingress hostname; no wildcard or port entries.
+    allowedHosts: [localhost, 127.0.0.1, "::1"]
+  service:
+    type: ClusterIP
+    port: 3000
+  # Used only for an external endpoint with flames: [].
+  join:
+    secretName: ""
+  # External endpoint configuration when flames is empty.
+  # With one managed flame, endpoint optionally overrides its direct FLM address.
+  flame:
+    endpoint: ""
+    name: ""
+    tls:
+      # SRE public trust ConfigMap in this namespace, containing caKey.
+      # Takes precedence over CA trust from secretName.
+      caConfigMap: ""
+      # Optional SRE client identity Secret; no credentials are generated here.
+      # Also supports legacy CA trust when caConfigMap is empty.
+      secretName: ""
+      caKey: ca.crt
+      certKey: ""
+      keyKey: ""
+      domain: ""
+
+# Each resource is <name>-<index+1> in its own <name>-ns-<index+1> namespace.
+# Namespaces are retained on uninstall; clients and workers stay in their Flame namespace.
+# Additional partial entries inherit the same resource defaults.
+flames:
+  - name: flame
+    namespace: "" # Empty selects flame-ns-1 for the first entry.
+    version: latest
+    endpoint: ""
+    # Installer-derived kubeconfig IPv4; combined with nodePort unless endpoint is set.
+    endpointHost: ""
+    kubernetesEndpoint: ""
+    rolloutRevision: ""
+    image: docker.io/xflops/flame-session-manager:latest
+    nodePort: null # Defaults to 30080 + index * 10.
+    storageSize: 20Gi
+    storageClass: ""
+    existingClaim: ""
+    resources:
+      requests: {cpu: "1", memory: 1Gi}
+      limits: {cpu: "4", memory: 8Gi}
+    nodeSelector: {}
+    cacheEndpoints: []
+    gateway:
+      hostname: ""
+      sessionPort: null # Defaults to 30443 + index * 10.
+      cachePort: null # Defaults to 31443 + index * 10.
+      className: flame-envoy
+      envoyNamespace: envoy-gateway-system
+      issuerName: flame-client-ca
+      clientAuth: true

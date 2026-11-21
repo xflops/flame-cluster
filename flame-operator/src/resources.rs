@@ -47,7 +47,9 @@ pub fn validate_flame(name: &str, spec: &FlameClusterSpec) -> Result<(), Error> 
     validate_cache_endpoints(&spec.cache_endpoints)?;
     let gateway = &spec.gateway;
     if gateway.hostname.is_empty() || gateway.hostname.contains(['/', ':', ' ', '*']) {
-        return Err(invalid("gateway.hostname must be a concrete DNS hostname"));
+        return Err(invalid(
+            "gateway.hostname must be a concrete DNS hostname or IPv4 address",
+        ));
     }
     let frontend = frontend_port(spec)?;
     if !(30000..=32767).contains(&gateway.session_port)
@@ -246,15 +248,32 @@ pub fn flame_resources(
     ));
     let client_identity = client_identity(name, namespace, cluster_uid)?;
     let tls_secret = format!("{name}-gateway-tls");
-    output.push(object("cert-manager.io/v1", "Certificate", &tls_secret, namespace,
-        json!({"secretName":tls_secret,"dnsNames":[g.hostname],"issuerRef":{"group":"cert-manager.io","kind":"ClusterIssuer","name":g.issuer_name}})));
+    let ip_hostname = g.hostname.parse::<Ipv4Addr>().is_ok();
+    let mut gateway_certificate = json!({"secretName":tls_secret,"issuerRef":{"group":"cert-manager.io","kind":"ClusterIssuer","name":g.issuer_name}});
+    gateway_certificate[if ip_hostname {
+        "ipAddresses"
+    } else {
+        "dnsNames"
+    }] = json!([g.hostname]);
+    output.push(object(
+        "cert-manager.io/v1",
+        "Certificate",
+        &tls_secret,
+        namespace,
+        gateway_certificate,
+    ));
     output.push(object("cert-manager.io/v1", "Certificate", &format!("{name}-admin-client"), namespace,
-        json!({"commonName":format!("{name}-admin"),"uris":[client_identity],"duration":"24h","secretName":format!("{name}-admin-client-tls"),
+        json!({"commonName":format!("{name}-admin"),"uris":[client_identity],"duration":"8760h","renewBefore":"720h","secretName":format!("{name}-admin-client-tls"),
         "privateKey":{"algorithm":"ECDSA","size":256,"rotationPolicy":"Always"},"usages":["client auth"],
         "issuerRef":{"group":"cert-manager.io","kind":"ClusterIssuer","name":g.issuer_name}})));
     let listener = |section: &str, port: u16| {
-        json!({"name":section,"hostname":g.hostname,"port":port,"protocol":"HTTPS",
-        "tls":{"mode":"Terminate","certificateRefs":[{"kind":"Secret","name":tls_secret}]},"allowedRoutes":{"namespaces":{"from":"Same"}}})
+        let mut listener = json!({"name":section,"port":port,"protocol":"HTTPS",
+        "tls":{"mode":"Terminate","certificateRefs":[{"kind":"Secret","name":tls_secret}]},"allowedRoutes":{"namespaces":{"from":"Same"}}});
+        // Gateway API hostname fields allow DNS names only. IP clients verify the IP SAN.
+        if !ip_hostname {
+            listener["hostname"] = json!(g.hostname);
+        }
+        listener
     };
     output.push(object("gateway.networking.k8s.io/v1", "Gateway", &gateway_name, namespace, json!({
         "gatewayClassName":g.class_name,"infrastructure":{"parametersRef":{"group":"gateway.envoyproxy.io","kind":"EnvoyProxy","name":gateway_name}},
@@ -293,12 +312,16 @@ fn route(
     host: &str,
     rules: Value,
 ) -> Value {
+    let mut spec = json!({"parentRefs":[{"name":gateway,"sectionName":section}],"rules":rules});
+    if host.parse::<Ipv4Addr>().is_err() {
+        spec["hostnames"] = json!([host]);
+    }
     object(
         "gateway.networking.k8s.io/v1",
         "HTTPRoute",
         name,
         namespace,
-        json!({"parentRefs":[{"name":gateway,"sectionName":section}],"hostnames":[host],"rules":rules}),
+        spec,
     )
 }
 

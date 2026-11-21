@@ -3,8 +3,9 @@
 Rust operator, host worker service, management API, and web UI for Flame clusters.
 The Rust implementation replaces the earlier Go operator.
 
-Read the [security boundaries](docs/security.md) before deployment. CRI runtime
-selection is configurable; worker-network isolation remains an SRE responsibility.
+Read the [security boundaries](docs/security.md) before deployment. Workers enable
+both CRI and Host shims by default; Host tasks run as root. Runtime selection is
+configurable, and worker-network isolation remains an SRE responsibility.
 
 | Component | Purpose |
 | --- | --- |

@@ -21,9 +21,10 @@ another namespace's objects and client Secrets are forbidden.
 Keep tokens and the local kubeconfig private. The worker identity can read only
 its own worker, read the selected FlameCluster, and patch its own status.
 
-The generated FEM/FOC system services currently run as root. The CRI shim is the
-default. When explicitly enabled, the Host shim starts application processes
-with FEM's OS identity.
+The generated FEM/FOC system services currently run as root. Both CRI and Host
+shims are enabled by default (`cri,host`). The Host shim starts application
+processes with FEM's OS identity, currently root. Select `--shims cri` at join
+time or set `FlameWorker.spec.shims: [cri]` for CRI-only execution.
 Therefore every principal allowed to submit Host-shim workloads, including
 `flamepy.app` code, must be trusted as a host administrator. Such code can read
 the root-owned worker kubeconfig and enrollment key, alter flmlet or systemd

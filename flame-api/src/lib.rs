@@ -245,7 +245,7 @@ pub struct HostServiceStatus {
 }
 
 pub fn default_shims() -> Vec<String> {
-    vec!["cri".into()]
+    vec!["cri".into(), "host".into()]
 }
 pub fn max_executors() -> u32 {
     10
@@ -280,7 +280,10 @@ mod schema_tests {
         let properties = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"];
         let desired = &properties["spec"]["properties"];
         assert_eq!(desired["cachePort"]["default"], 9090);
-        assert_eq!(desired["shims"]["default"], serde_json::json!(["cri"]));
+        assert_eq!(
+            desired["shims"]["default"],
+            serde_json::json!(["cri", "host"])
+        );
         assert_eq!(desired["maxExecutors"]["default"], 10);
         assert_eq!(desired["pythonVersion"]["default"], "3.12");
         assert_eq!(desired["manageObjectCache"]["default"], false);

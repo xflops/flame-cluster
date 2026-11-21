@@ -16,7 +16,9 @@ CA PEM in `data["ca.crt"]`. Private CA keys remain with the issuer.
 Worker hosts need Linux/systemd, Python 3, logrotate, and prepared workload
 runtimes, networking, and storage. Flmlet uses upstream setup to install FEM
 and its systemd units, then writes configuration and restarts FEM. SREs provide
-and secure CRI/CNI when using the default CRI shim.
+and secure CRI/CNI. Workers enable both CRI and Host shims by default
+(`cri,host`); Host workloads run as root. Use `setup.sh --join TOKEN --shims cri`
+for CRI-only workers, or `--shims host` for Host-only workers.
 
 ## Install
 

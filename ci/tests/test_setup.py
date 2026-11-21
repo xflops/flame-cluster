@@ -657,9 +657,9 @@ socket.gethostname = lambda: 'auto-worker'
         self.assertEqual(self.enroll_requests[0]['address'], '192.168.3.42')
         self.assertEqual(self.enroll_requests[0]['maxExecutors'], 10)
         self.assertIs(self.enroll_requests[0]['manageObjectCache'], False)
-        self.assertEqual(self.enroll_requests[0]['shims'], ['cri'])
+        self.assertEqual(self.enroll_requests[0]['shims'], ['cri', 'host'])
 
-    def test_host_runtime_is_explicit_opt_in(self):
+    def test_explicit_host_only_runtime_is_preserved(self):
         result = self.run_setup(*self.worker_args())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.enroll_requests[0]['shims'], ['host'])
@@ -668,6 +668,11 @@ socket.gethostname = lambda: 'auto-worker'
         result = self.run_setup(*self.worker_args(), '--shims', 'cri,host')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.enroll_requests[0]['shims'], ['cri', 'host'])
+
+    def test_explicit_cri_only_runtime_is_preserved(self):
+        result = self.run_setup(*self.worker_args(), '--shims', 'cri')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.enroll_requests[0]['shims'], ['cri'])
 
     def test_duplicate_or_unknown_runtime_selection_is_rejected_before_enrollment(self):
         for shims in ['cri,cri', 'host,host', 'docker', 'cri,', 'unknown,host']:

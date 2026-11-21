@@ -306,6 +306,29 @@ fn desired_yaml_and_units_use_lan_endpoint_explicit_python_and_worker_settings()
     assert!(desired.units.contains_key(FOC));
 }
 #[test]
+fn fem_configuration_uses_both_default_shims_and_preserves_explicit_overrides() {
+    for selection in [None, Some(vec!["cri"]), Some(vec!["host"])] {
+        let mut enrolled = worker();
+        let mut spec = serde_json::to_value(&enrolled.spec).unwrap();
+        match &selection {
+            None => {
+                spec.as_object_mut().unwrap().remove("shims");
+            }
+            Some(shims) => spec["shims"] = json!(shims),
+        }
+        enrolled.spec = serde_json::from_value(spec).unwrap();
+        let desired = desired(&settings(), &enrolled, &cluster()).unwrap();
+        let config: Value = serde_yaml::from_str(
+            &desired.files[&PathBuf::from("/srv/flame/conf/flame-cluster.yaml")],
+        )
+        .unwrap();
+        assert_eq!(
+            config["cluster"]["executors"]["shims"],
+            json!(selection.unwrap_or_else(|| vec!["cri", "host"]))
+        );
+    }
+}
+#[test]
 fn identical_reconcile_is_idempotent_but_rechecks_live_services_and_registration() {
     let mut host = FakeHost::healthy();
     let first = run(&mut host, &settings(), &worker(), &cluster()).unwrap();

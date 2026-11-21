@@ -30,7 +30,7 @@ usage: setup.sh [options]
   --worker NAME             worker name (default detected hostname)
   --address IPV4            worker LAN address (default detected private interface)
   --max-executors N          worker executor limit (default 10)
-  --shims LIST              cri, host, or cri,host (default cri; SRE prepares runtimes)
+  --shims LIST              cri, host, or cri,host (default cri,host; SRE prepares runtimes)
   --manage-object-cache      let flmlet manage the worker object cache
   --prefix DIR              Flame installation directory (default /usr/local/flame)
   --systemd-dir DIR         systemd unit directory (default /etc/systemd/system)
@@ -66,7 +66,7 @@ inline_join_token=
 worker=
 address=
 max_executors=10
-shims=cri
+shims=cri,host
 manage_cache=0
 prefix=/usr/local/flame
 systemd_dir=/etc/systemd/system

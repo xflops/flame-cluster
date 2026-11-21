@@ -190,15 +190,24 @@ grep -Eq 'Failed:[[:space:]]+0' "$runtime/executor-probe.log"
 bash ci/test-flamepy.sh "$runtime"
 
 # Managed connection state comes from the mounted catalog, not a global endpoint.
-"${management_kube[@]}" get configmap cluster-connections -o 'jsonpath={.data.connections\.json}' > "$runtime/connections-original.json"
+"${management_kube[@]}" get configmap cluster-connections -o json > "$runtime/connections-original.json"
 python3 - "$runtime" <<'PYCONNECTIONS'
-import json,sys
+import copy,json,sys
 from pathlib import Path
 root=Path(sys.argv[1]);original=json.loads((root/'connections-original.json').read_text())
-for name,values in [('restore',original),('unavailable',[dict(row,endpoint='https://127.0.0.1:1') if i==0 else row for i,row in enumerate(original)])]:
-    (root/f'connections-{name}.json').write_text(json.dumps({'data':{'connections.json':json.dumps(values)}}))
+for field in ['uid','resourceVersion','generation','creationTimestamp','managedFields']:
+    original['metadata'].pop(field,None)
+unavailable=copy.deepcopy(original)
+rows=json.loads(unavailable['data']['connections.json'])
+rows[0]['endpoint']='https://127.0.0.1:1'
+unavailable['data']['connections.json']=json.dumps(rows)
+for name,configmap in [('restore',original),('unavailable',unavailable)]:
+    (root/f'connections-{name}.json').write_text(json.dumps(configmap))
 PYCONNECTIONS
-"${management_kube[@]}" patch configmap cluster-connections --type merge --patch-file "$runtime/connections-unavailable.json"
+# Full-object SSA preserves Helm's Apply ownership and metadata. Even an
+# imperative patch using manager "helm" creates Update ownership and conflicts
+# with a later Helm upgrade. Restore the original catalog bytes without reformatting.
+"${management_kube[@]}" apply --server-side --field-manager=helm -f "$runtime/connections-unavailable.json"
 "${management_kube[@]}" rollout restart deployment/cluster
 "${management_kube[@]}" rollout status deployment/cluster --timeout=120s
 for attempt in {1..30}; do
@@ -209,7 +218,7 @@ for attempt in {1..30}; do
   [[ "$attempt" != 30 ]] || { cat "$runtime/upstream-unavailable.json" >&2; exit 1; }
   sleep 1
 done
-"${management_kube[@]}" patch configmap cluster-connections --type merge --patch-file "$runtime/connections-restore.json"
+"${management_kube[@]}" apply --server-side --field-manager=helm -f "$runtime/connections-restore.json"
 "${management_kube[@]}" rollout restart deployment/cluster
 "${management_kube[@]}" rollout status deployment/cluster --timeout=120s
 for attempt in {1..30}; do

@@ -21,6 +21,10 @@ rules:
   - apiGroups: [flame.xflops.io]
     resources: [flameworkers]
     verbs: [get, list]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ printf "%s-config" $flame.name | quote }}]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

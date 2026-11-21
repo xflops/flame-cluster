@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 const app = (name,state=0) => ({metadata:{name},spec:{shim:3,command:'/usr/local/flame/bin/flmping-service',description:'Application service'},status:{state,creation_time:1794614400000}});
 const inventory = {
   applications:[app('flmping'),app('flmrun',1),...Array.from({length:13},(_,i)=>app(`python-${i}`))],
@@ -7,7 +8,9 @@ const inventory = {
   executors:[{metadata:{id:'executor-01'},spec:{node:'flm-worker-01',application:'flmping',shim:3,resreq:{cpu:2,memory:1024**3}},status:{state:4,session_id:'session-42'}}],
 };
 const stateNames = {nodes:['Unknown','Ready','Not ready'],applications:['Enabled','Disabled'],sessions:['Open','Closed','Suspending','Suspended'],executors:['Unknown','Void','Idle','Binding','Bound','Unbinding','Releasing','Released']};
-const connection = {id:'training',endpoint:'http://flm:8080',displayName:'Training Flame'};
+const connection = {id:'training',endpoint:'http://flm:8080',displayName:'Training Flame',clientConfigAvailable:true};
+const hostedJoin = "curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join 'current-token'";
+const clientBundle = id => `current-context: ${id}\r\ncontexts:\r\n  - name: ${id}\r\n    cluster:\r\n      endpoint: https://${id}:30443\r\n      tls:\r\n        key: PRIVATE-KEY-FIXTURE-${id}\r\n# 火焰\r\n`;
 const scoped = resource => `/api/connections/training/${resource}`;
 async function fixture(page, options={}) {
   const connections=options.connections || [connection];
@@ -22,9 +25,12 @@ async function fixture(page, options={}) {
     if(!selected || segments[2]!=='connections') return route.fulfill({status:404,json:{error:'Unknown connection'}});
     if(options.wait?.[`${selected.id}/${resource}`]) await options.wait[`${selected.id}/${resource}`];
     if(resource==='connection') return route.fulfill({json:selected});
+    if(resource==='flame.yaml') return options.downloadFail
+      ? route.fulfill({status:503,contentType:'application/yaml',body:'PRIVATE-KEY-ERROR-BODY'})
+      : route.fulfill({body:clientBundle(selected.id),headers:{'Content-Type':'application/yaml','Content-Disposition':'attachment; filename="flame.yaml"','Cache-Control':'no-store'}});
     if(resource==='join') return options.joinFail
       ? route.fulfill({status:503,json:{error:'Node join is not configured.'}})
-      : route.fulfill({json:{command:options.joinCommands?.[selected.id] || "sudo sh setup.sh --join 'current-token'",expiresAt:new Date(Date.now()+(options.joinExpired ? -60000 : 900000)).toISOString()}});
+      : route.fulfill({json:{command:options.joinCommands?.[selected.id] || hostedJoin,expiresAt:new Date(Date.now()+(options.joinExpired ? -60000 : 900000)).toISOString()}});
     if(route.request().method()==='POST') {
       if(options.actionFail) return route.fulfill({status:409,json:{error:'Session state changed. Refresh and retry.'}});
       if(resource==='delete') data.sessions=[];
@@ -68,11 +74,11 @@ test('settings shows the configured cluster without requesting a resource invent
   await expect(page.locator('#content')).toContainText('http://flm:8080');
   await expect(page.getByLabel('Filter by status')).toBeHidden();
   await expect(page.getByRole('button',{name:'Next →',exact:true})).toBeHidden();
-  await expect(page.locator('#join-command')).toHaveText("sudo sh setup.sh --join 'current-token'");
+  await expect(page.locator('#join-command')).toHaveText(hostedJoin);
   await page.context().grantPermissions(['clipboard-read','clipboard-write']);
   await page.getByRole('button',{name:'Copy join command',exact:true}).click();
   await expect(page.locator('#copy-status')).toHaveText('Copied');
-  expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe("sudo sh setup.sh --join 'current-token'");
+  expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe(hostedJoin);
   expect(paths.sort()).toEqual(['/api/connections',scoped('connection'),scoped('join')].sort());
   await page.getByRole('link',{name:'Nodes',exact:true}).click();
   await expect(page.getByLabel('Filter by status')).toBeVisible();
@@ -161,7 +167,7 @@ test('resource navigation remains usable on a narrow screen',async({page})=>{
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
 
-const production = {id:'production',namespace:'production-ns',endpoint:'https://prod-flm:8080',displayName:'production-ns/production'};
+const production = {id:'production',namespace:'production-ns',endpoint:'https://prod-flm:8080',displayName:'production-ns/production',clientConfigAvailable:true};
 const productionInventory = {
   ...inventory,
   applications:[app('production-service')],
@@ -319,4 +325,80 @@ test('switching the selector aborts an in-flight session mutation',async({page})
   await aborted;pending.resolve();
   await expect(page.getByRole('button',{name:'prod-session',exact:true})).toBeVisible();
   await expect(page.locator('#notice')).toBeHidden();
+});
+
+test('Settings downloads exact flame.yaml bytes for only the selected namespace',async({page})=>{
+  const requests=[];
+  page.on('request',request=>{if(new URL(request.url()).pathname.endsWith('/flame.yaml'))requests.push(new URL(request.url()).pathname)});
+  await fixture(page,multiple);await page.goto('/#/settings');
+  const downloadButton=()=>page.getByRole('button',{name:'Download flame.yaml',exact:true});
+  await expect(downloadButton()).toBeEnabled();
+  expect(requests).toEqual([]);
+  for(const id of ['training','production']) {
+    if(id==='production') await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption(id);
+    await expect(downloadButton()).toBeEnabled();
+    const downloaded=page.waitForEvent('download');
+    await downloadButton().click();
+    const download=await downloaded;
+    expect(download.suggestedFilename()).toBe('flame.yaml');
+    expect(await readFile(await download.path())).toEqual(Buffer.from(clientBundle(id)));
+    await expect(page.locator('#download-status')).toHaveText('Download started.');
+    await expect(page.locator('body')).not.toContainText('PRIVATE-KEY-FIXTURE');
+  }
+  expect(requests).toEqual([scoped('flame.yaml'),'/api/connections/production/flame.yaml']);
+});
+test('Settings explains unavailable client configuration without requesting a bundle',async({page})=>{
+  const requests=[];page.on('request',request=>{if(new URL(request.url()).pathname.endsWith('/flame.yaml'))requests.push(request.url())});
+  await fixture(page,{connections:[{...connection,clientConfigAvailable:false}]});await page.goto('/#/settings');
+  await expect(page.getByRole('region',{name:'Client configuration'})).toContainText('Client configuration is unavailable for this Flame.');
+  await expect(page.getByRole('button',{name:'Download flame.yaml',exact:true})).toBeDisabled();
+  expect(requests).toEqual([]);
+});
+test('client download failure is friendly, exposes no response content, and can be retried',async({page})=>{
+  const options={downloadFail:true},downloads=[];
+  page.on('download',download=>downloads.push(download));
+  await fixture(page,options);await page.goto('/#/settings');
+  const button=page.getByRole('button',{name:'Download flame.yaml',exact:true});
+  await button.click();
+  await expect(page.locator('#download-status')).toHaveText('Unable to download flame.yaml. Refresh and try again.');
+  await expect(page.locator('body')).not.toContainText('PRIVATE-KEY-ERROR-BODY');
+  expect(downloads).toEqual([]);
+  options.downloadFail=false;
+  const downloaded=page.waitForEvent('download');await button.click();
+  expect((await downloaded).suggestedFilename()).toBe('flame.yaml');
+});
+for(const destination of ['another Flame','another view']) test(`a delayed client configuration cannot download after switching to ${destination}`,async({page})=>{
+  const pending=deferred(),downloads=[];
+  await ignoreTrainingAbort(page);
+  page.on('download',download=>downloads.push(download));
+  await fixture(page,{...multiple,wait:{'training/flame.yaml':pending.promise}});await page.goto('/#/settings');
+  const started=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('flame.yaml'));
+  await page.getByRole('button',{name:'Download flame.yaml',exact:true}).click();await started;
+  if(destination==='another Flame') {
+    await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+    await expect(page.getByRole('button',{name:'Download flame.yaml',exact:true})).toBeEnabled();
+  } else {
+    await page.getByRole('link',{name:'Nodes',exact:true}).click();
+    await expect(page.getByRole('button',{name:/flm-worker-01/})).toBeVisible();
+  }
+  const finished=page.waitForResponse(response=>new URL(response.url()).pathname===scoped('flame.yaml'));
+  pending.resolve();await (await finished).finished();
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  expect(downloads).toEqual([]);
+  await expect(page.locator('body')).not.toContainText('PRIVATE-KEY-FIXTURE');
+  if(destination==='another Flame') {
+    const downloaded=page.waitForEvent('download');await page.getByRole('button',{name:'Download flame.yaml',exact:true}).click();
+    expect(await readFile(await (await downloaded).path())).toEqual(Buffer.from(clientBundle('production')));
+  }
+});
+test('changing the namespace aborts an active client download request',async({page})=>{
+  const pending=deferred();
+  await fixture(page,{...multiple,wait:{'training/flame.yaml':pending.promise}});await page.goto('/#/settings');
+  const started=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('flame.yaml'));
+  await page.getByRole('button',{name:'Download flame.yaml',exact:true}).click();await started;
+  const aborted=page.waitForEvent('requestfailed',{predicate:request=>new URL(request.url()).pathname===scoped('flame.yaml')});
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+  await aborted;pending.resolve();
+  await expect(page.locator('#download-status')).toBeEmpty();
+  await expect(page.getByRole('button',{name:'Download flame.yaml',exact:true})).toBeEnabled();
 });

@@ -319,12 +319,12 @@ async fn join_command_reads_rotating_credentials_and_refuses_expired_or_invalid_
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             data,
-            json!({"command":format!("sudo sh setup.sh --join '{token}'"),"expiresAt":expiry})
+            json!({"command":format!("curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '{token}'"),"expiresAt":expiry})
         );
         let (_, connection) = get(app.clone(), "/api/connection").await;
         assert_eq!(
             connection,
-            json!({"endpoint":"http://127.0.0.1:9","displayName":"Flame"})
+            json!({"endpoint":"http://127.0.0.1:9","displayName":"Flame","clientConfigAvailable":false})
         );
     }
     for token in ["", "unsafe'$(id)", "not base64"] {
@@ -386,7 +386,7 @@ async fn connection_and_health_need_no_upstream_or_kubernetes() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         data,
-        json!({"endpoint":"http://127.0.0.1:9","displayName":"Training"})
+        json!({"endpoint":"http://127.0.0.1:9","displayName":"Training","clientConfigAvailable":false})
     );
     assert_eq!(get(app.clone(), "/healthz").await.0, StatusCode::OK);
     for path in [
@@ -432,8 +432,8 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
         state.join_expiry_file = Some(expiry_path);
     }
     let expected_catalog = json!({"items":[
-        {"id":"flame-1","endpoint":first.endpoint,"displayName":"First Flame"},
-        {"id":"flame-0","endpoint":second.endpoint,"displayName":"Second Flame"}
+        {"id":"flame-1","endpoint":first.endpoint,"displayName":"First Flame","clientConfigAvailable":false},
+        {"id":"flame-0","endpoint":second.endpoint,"displayName":"Second Flame","clientConfigAvailable":false}
     ]});
     let app = fleet_router(vec![("flame-1".into(), first), ("flame-0".into(), second)]).unwrap();
     let (status, catalog) = get(app.clone(), "/api/connections").await;
@@ -488,7 +488,9 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body["command"],
-            format!("sudo sh setup.sh --join '{token}'")
+            format!(
+                "curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '{token}'"
+            )
         );
     }
     std::fs::write(
@@ -662,7 +664,9 @@ async fn managed_join_lookups_are_exact_and_isolated_to_each_flame_namespace() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body["command"],
-            format!("sudo sh setup.sh --join '{token}'")
+            format!(
+                "curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '{token}'"
+            )
         );
         assert!(!body.to_string().contains("PRIVATE_KEY"));
     }
@@ -1164,4 +1168,247 @@ async fn api_hosts_require_explicit_trust_and_health_probes_are_exempt() {
         assert_eq!(response.status(), status);
     }
     let _ = stop.send(());
+}
+
+#[tokio::test]
+async fn client_bundle_downloads_use_only_the_selected_namespace_secret_and_attachment_headers() {
+    use k8s_openapi::{ByteString, api::core::v1::Secret};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    let first_bundle =
+        "current-context: first\ncontexts:\n  - name: first\n    key_data: PRIVATE_FIRST\n";
+    let second_bundle =
+        "current-context: second\ncontexts:\n  - name: second\n    key_data: PRIVATE_SECOND\n";
+    let first_path = "/api/v1/namespaces/flame-ns-1/secrets/flame-1-client";
+    let second_path = "/api/v1/namespaces/flame-ns-2/secrets/flame-2-client";
+    let replies = Arc::new(Mutex::new(BTreeMap::new()));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    for (path, bundle) in [(first_path, first_bundle), (second_path, second_bundle)] {
+        let secret = Secret {
+            data: Some(BTreeMap::from([
+                ("flame.yaml".into(), ByteString(bundle.as_bytes().to_vec())),
+                (
+                    "tls.key".into(),
+                    ByteString(b"NEVER_RETURN_OTHER_SECRET_KEYS".to_vec()),
+                ),
+            ])),
+            ..Default::default()
+        };
+        replies.lock().unwrap().insert(
+            path.to_owned(),
+            (StatusCode::OK, serde_json::to_value(secret).unwrap()),
+        );
+    }
+    let lookup = replies.clone();
+    let requests = paths.clone();
+    let client = kube::Client::new(
+        tower::service_fn(move |request: Request<kube::client::Body>| {
+            assert_eq!(request.method(), "GET");
+            let path = request.uri().path().to_owned();
+            requests.lock().unwrap().push(path.clone());
+            let (status, body) = lookup
+                .lock()
+                .unwrap()
+                .get(&path)
+                .cloned()
+                .expect("only configured client Secret reads are allowed");
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    axum::http::Response::builder()
+                        .status(status)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+            }
+        }),
+        "management",
+    );
+    let mut configs = Vec::new();
+    for number in 1..=2 {
+        let mut config = ConnectionConfig::new(format!("http://flame-{number}:8080"));
+        config.namespace = Some(format!("flame-ns-{number}"));
+        config.client_config_secret = Some(format!("flame-{number}-client"));
+        assert!(
+            AppState::connect(config.clone()).is_err(),
+            "client-only Secret sources also require Kubernetes initialization"
+        );
+        configs.push((
+            format!("flame-{number}"),
+            AppState::connect_with_kubernetes(config, Some(client.clone())).unwrap(),
+        ));
+    }
+    configs.push((
+        "standalone".into(),
+        AppState::connect(ConnectionConfig::new("http://standalone:8080")).unwrap(),
+    ));
+    let app = fleet_router(configs).unwrap();
+    let (_, metadata) = get(app.clone(), "/api/connections").await;
+    assert_eq!(metadata["items"][0]["clientConfigAvailable"], true);
+    assert_eq!(metadata["items"][1]["clientConfigAvailable"], true);
+    assert_eq!(metadata["items"][2]["clientConfigAvailable"], false);
+    for text in [
+        "flame-1-client",
+        "flame-2-client",
+        "PRIVATE_FIRST",
+        "PRIVATE_SECOND",
+        "NEVER_RETURN_OTHER_SECRET_KEYS",
+    ] {
+        assert!(!metadata.to_string().contains(text));
+    }
+    for uri in ["/api/connection", "/api/connections/flame-2/connection"] {
+        let (_, metadata) = get(app.clone(), uri).await;
+        assert_eq!(metadata["clientConfigAvailable"], true);
+        assert!(!metadata.to_string().contains("clientConfigSecret"));
+    }
+    assert!(
+        paths.lock().unwrap().is_empty(),
+        "metadata does not read private bundles"
+    );
+    for (uri, bundle) in [
+        ("/api/flame.yaml", first_bundle),
+        (
+            "/api/connections/flame-2/flame.yaml?namespace=flame-ns-1&secret=flame-1-client",
+            second_bundle,
+        ),
+        ("/api/connections/flame-1/flame.yaml", first_bundle),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("host", "localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "application/yaml");
+        assert_eq!(
+            response.headers()["content-disposition"],
+            "attachment; filename=\"flame.yaml\""
+        );
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), bundle.as_bytes());
+    }
+    assert_eq!(
+        paths.lock().unwrap().as_slice(),
+        [first_path, second_path, first_path]
+    );
+    let previous = paths.lock().unwrap().len();
+    assert_eq!(
+        get(app.clone(), "/api/connections/standalone/flame.yaml")
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        get(app.clone(), "/api/connections/unknown/flame.yaml")
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let rejected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/connections/flame-1/flame.yaml")
+                .header("host", "attacker.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    assert_eq!(paths.lock().unwrap().len(), previous);
+
+    let malformed = |bytes: Vec<u8>| {
+        serde_json::to_value(Secret {
+            data: Some(BTreeMap::from([("flame.yaml".into(), ByteString(bytes))])),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    for (status, body) in [
+        (
+            StatusCode::FORBIDDEN,
+            json!({"kind":"Status","apiVersion":"v1","status":"Failure","message":"PRIVATE_FORBIDDEN","reason":"Forbidden","code":403}),
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            json!({"kind":"Status","apiVersion":"v1","status":"Failure","message":"PRIVATE_MISSING","reason":"NotFound","code":404}),
+        ),
+        (
+            StatusCode::OK,
+            serde_json::to_value(Secret::default()).unwrap(),
+        ),
+        (
+            StatusCode::OK,
+            json!({"apiVersion":"v1","kind":"Secret","data":{"tls.key":"UFJJVkFURV9PTkxZ"}}),
+        ),
+        (StatusCode::OK, malformed(vec![0xff, 0xfe])),
+        (StatusCode::OK, malformed(vec![])),
+        (StatusCode::OK, malformed(b" \n\t".to_vec())),
+    ] {
+        replies
+            .lock()
+            .unwrap()
+            .insert(second_path.into(), (status, body));
+        let (status, error) = get(app.clone(), "/api/connections/flame-2/flame.yaml").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            error,
+            json!({"error":"The selected Flame's client configuration is unavailable. Refresh and retry."})
+        );
+    }
+    let rotated = "current-context: first-rotated\n";
+    replies.lock().unwrap().insert(
+        first_path.into(),
+        (StatusCode::OK, malformed(rotated.as_bytes().to_vec())),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/connections/flame-1/flame.yaml")
+                .header("host", "localhost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        rotated.as_bytes()
+    );
+    assert!(
+        paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| path == first_path || path == second_path)
+    );
+}
+
+#[tokio::test]
+async fn standalone_client_bundle_is_unavailable_without_a_configured_secret() {
+    let app = router(AppState::connect(ConnectionConfig::new("http://127.0.0.1:9")).unwrap());
+    assert_eq!(
+        get(app.clone(), "/api/flame.yaml").await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let (_, metadata) = get(app, "/api/connection").await;
+    assert_eq!(metadata["clientConfigAvailable"], false);
 }

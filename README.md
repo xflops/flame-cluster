@@ -24,16 +24,24 @@ issuer/trust configuration separately. The Helm charts have no dependencies.
 The installer uses Helm for the control plane in an existing Kubernetes cluster:
 
 ```sh
-curl -fsSLo setup.sh https://xflops.io/cluster/setup.sh
-sh setup.sh
+curl -fsSL https://xflops.io/cluster/setup.sh | sh
 ```
 
 Setup uses the active kubeconfig server for Kubernetes access and the
 session-manager/cache NodePort host. Defaults require no values file; `--values`
 is optional. SREs prepare the dependencies described below. The operator generates
 a cluster join token and renews it every 15 minutes. Open the UI at `/`, select
-a namespace in the selector, open **Settings**, and copy the **Join a node** command. Run it on the prepared worker
-host with `setup.sh` available; no `kubectl` token lookup is needed. Flmlet runs
+a namespace in the selector, open **Settings**, and copy the **Join a node**
+command. Run it on the prepared worker host; it fetches the hosted installer:
+
+```sh
+curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '<token>'
+```
+
+Use the actual command from Settings; no local installer or `kubectl` token
+lookup is needed. Settings also offers **Download flame.yaml** for the selected
+namespace. The downloaded bundle contains its client certificate and private
+key; keep the file private. Flmlet runs
 upstream `flame/setup.sh --join` to install FEM and its systemd units, then writes
 the cluster config and restarts FEM with that configuration.
 
@@ -64,8 +72,10 @@ further entries receive indexed names and separate namespaces and ports.
 
 Each namespace owns its FlameCluster, FlameWorkers, client credentials, and join
 Secret. Worker permissions and gateway client identities are scoped to that
-Flame. The management API may read only the configured exact join Secrets; it
-cannot list Secrets or read client private keys.
+Flame. The management API may read only the configured exact join and client
+bundle Secrets in each namespace, enabling administrative join commands and
+client downloads. It cannot list or modify Secrets, or read unrelated server
+private keys. Restrict UI/API access to trusted administrators.
 
 Open `http://<kubeconfig-server-ip>/`. Setup derives the UI external IP and host
 allowlist directly from kubeconfig, without a UI-address flag or port-forward.

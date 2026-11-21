@@ -70,6 +70,7 @@ class Render(unittest.TestCase):
             self.assertEqual(connection['caFile'], f'/etc/flame/connections/{name}/ca.crt')
             self.assertEqual(connection['joinNamespace'], connection['namespace'])
             self.assertEqual(connection['joinSecret'], f'{name}-join')
+            self.assertEqual(connection['clientConfigSecret'], f'{name}-client')
             self.assertNotIn('joinTokenFile', connection)
             self.assertNotIn('joinExpiryFile', connection)
             self.assertIn(f'mountPath: "/etc/flame/connections/{name}"', deployment)
@@ -93,8 +94,8 @@ class Render(unittest.TestCase):
         self.assertEqual(rbac.count('    resources: [secrets]'), 2)
         self.assertEqual(rbac.count('    namespace: team-a'), 2)
         for name in ['flame-1', 'flame-2']:
-            self.assertIn(f'resourceNames: ["{name}-join"]', rbac)
-        for forbidden in ['ClusterRole', 'verbs: [list]', 'create', 'update', 'delete', '*', '-client']:
+            self.assertIn(f'resourceNames: ["{name}-join", "{name}-client"]', rbac)
+        for forbidden in ['ClusterRole', 'verbs: [list]', 'create', 'update', 'delete', '*', '-control-plane-tls']:
             self.assertNotIn(forbidden, rbac)
         values['flames'][0]['namespace'] = 'custom-flame-ns'
         failure = render(values, check=False)

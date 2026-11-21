@@ -16,7 +16,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [{{ printf "%s-join" $flame.name | quote }}]
+    resourceNames: [{{ printf "%s-join" $flame.name | quote }}, {{ printf "%s-client" $flame.name | quote }}]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

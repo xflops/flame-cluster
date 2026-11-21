@@ -8,8 +8,8 @@ const paths = {
   executors: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><path d="m10 10 4 2-4 2z"/>',
 };
 const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
-const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
-let catalogController, pollController, taskController, actionController, revision = 0;
+const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
+let catalogController, pollController, taskController, actionController, downloadController, revision = 0;
 const pageSize = 12;
 const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
@@ -42,9 +42,9 @@ async function loadConnections() {
 }
 function selectConnection(id) {
   if (id === state.connectionId || !state.connections?.some(connection => connection.id === id)) return;
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort();
+  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
   pageCache.clear();
-  Object.assign(state, {connectionId: id, connection: null, join: null, pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
+  Object.assign(state, {connectionId: id, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
   $('#details').close(); $('#detail-content').replaceChildren();
   render(); refresh();
 }
@@ -108,6 +108,32 @@ async function actOnSession(row, action, connectionId) {
   }
 }
 
+async function downloadClientConfig(connectionId) {
+  if (state.downloading || state.view !== 'settings' || connectionId !== state.connectionId) return;
+  const generation = revision, controller = new AbortController();
+  downloadController = controller;
+  state.downloading = true; state.downloadStatus = ''; render();
+  const current = () => generation === revision && state.connectionId === connectionId && state.view === 'settings';
+  try {
+    const response = await fetch(`/api/connections/${encodeURIComponent(connectionId)}/flame.yaml`, {
+      cache: 'no-store', headers: {Accept: 'application/yaml'}, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+    });
+    if (!response.ok) throw new Error('Client configuration is unavailable. Refresh and try again.');
+    const bundle = await response.blob();
+    if (!current() || controller.signal.aborted) return;
+    const url = URL.createObjectURL(bundle), link = document.createElement('a');
+    link.href = url; link.download = 'flame.yaml'; link.hidden = true;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    state.downloadStatus = 'Download started.';
+  } catch (error) {
+    if (current() && !controller.signal.aborted) state.downloadStatus = error.name === 'TimeoutError'
+      ? 'Download timed out. Try again.' : 'Unable to download flame.yaml. Refresh and try again.';
+  } finally {
+    if (current()) {state.downloading = false; render();}
+  }
+}
+
 function renderNavigation() {
   $('#navigation').innerHTML = Object.entries(views).map(([key, view]) => `<a class="nav-item ${state.view === key ? 'active' : ''}" href="#/${key}" ${state.view === key ? 'aria-current="page"' : ''}>${icon(key)}${view.title}</a>`).join('');
   const nav = $('#navigation'), selected = nav.querySelector('[aria-current="page"]');
@@ -161,8 +187,14 @@ function render() {
         `<tr><td>FLM endpoint</td><td>${e(state.connection.endpoint)}</td></tr>`,
       ])
       : empty(errors.length ? 'Unable to load settings' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Connection settings will appear here shortly.');
+    const clientConfigAvailable = state.connection?.clientConfigAvailable ?? selected?.clientConfigAvailable;
+    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Client configuration"><h3>Client configuration</h3><p>${clientConfigAvailable
+      ? `Download the Flame client configuration for ${e(selected?.namespace || selected?.displayName || state.connectionId)}.`
+      : 'Client configuration is unavailable for this Flame.'}</p><button class="button" id="download-config" ${!clientConfigAvailable || state.downloading ? 'disabled' : ''}>${state.downloading ? 'Downloading…' : 'Download flame.yaml'}</button><p id="download-status" role="status">${e(state.downloadStatus)}</p></section>`);
+    const downloadConnectionId = state.connectionId;
+    $('#download-config').addEventListener('click', () => downloadClientConfig(downloadConnectionId));
     const join = state.join && Date.parse(state.join.expiresAt) > Date.now() ? state.join : null;
-    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host with setup.sh installed. Flmlet installs and configures its Flame runtime.</p>${join
+    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host. It downloads the installer; Flmlet installs and configures its Flame runtime.</p>${join
       ? `<pre><code id="join-command">${e(join.command)}</code></pre><p>Expires ${e(new Date(join.expiresAt).toLocaleString())}. Refresh to get the latest command.</p><button class="button" id="copy-join">Copy join command</button><span id="copy-status" role="status"></span>`
       : `<p>${e(state.errors.join || (state.loading ? 'Loading join command…' : 'Join command unavailable. Refresh to retry.'))}</p>`}</section>`);
     $('#copy-join')?.addEventListener('click', async () => {
@@ -306,10 +338,10 @@ async function loadTasks(row, page = 1) {
   } finally { clearTimeout(timer); }
 }
 function route() {
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort();
+  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
   state.view = parseRoute(location.hash);
   if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
-  Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null});
+  Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null, downloading: false, downloadStatus: ''});
   restorePage(); $('#details').close();
   document.title = `${views[state.view].title} · Flame Console`;
   render(); refresh();

@@ -255,11 +255,15 @@ get '/api/applications?pageSize=100' | jq -e 'any(.items[]; .metadata.name=="fla
 # Verify real host idempotence, rolling configuration and credential revocation.
 bash ci/test-flmlet.sh "$runtime"
 
-# Management may read exact enrollment Secrets, never client private keys.
+# Management may read exact enrollment and client-bundle Secrets, without discovery or writes.
 "${management_kube[@]}" get deployment cluster -o json | jq -e '.spec.template.spec.serviceAccountName=="cluster" and .spec.template.spec.automountServiceAccountToken==true' >/dev/null
 [[ "$(kubectl auth can-i get secret/flame-1-join --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
 [[ "$(kubectl auth can-i get secret/flame-2-join --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
-[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-2-client --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i get secret/flame-1-control-plane-tls --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i patch secret/flame-1-client --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
 [[ "$(kubectl auth can-i list secrets --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
 python3 - "$runtime" <<'PY'
 import json,sys

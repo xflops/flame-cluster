@@ -21,6 +21,7 @@ root=Path(sys.argv[1])
 for index in (1,2):
     result=json.loads((root/f'join-{index}.json').read_text())
     command=shlex.split(result['command'])
+    assert command[:9]==['curl','-fsSL','https://xflops.io/cluster/setup.sh','|','sudo','sh','-s','--','--join']
     token=command[command.index('--join')+1]
     envelope=json.loads(base64.b64decode(token,validate=True))
     assert envelope['namespace']==f'flame-ns-{index}'
@@ -28,6 +29,21 @@ for index in (1,2):
 print('Each join command enrolls only into its selected namespace and Flame.')
 PYJOIN
 rm -f "$runtime/secrets/join-1.json" "$runtime/secrets/join-2.json"
+
+# Downloads must match the selected namespace's actual bundle, not another client.
+jq -e 'all(.items[]; .clientConfigAvailable==true)' "$runtime/connections.json" >/dev/null
+for index in 1 2; do
+  curl -fsS -D "$runtime/secrets/client-headers-$index.txt" \
+    "$base/api/connections/flame-$index/flame.yaml" > "$runtime/secrets/client-download-$index.yaml"
+  kubectl -n "flame-ns-$index" get secret "flame-$index-client" -o json \
+    | jq -ej '.data["flame.yaml"]|@base64d' > "$runtime/secrets/client-expected-$index.yaml"
+  cmp "$runtime/secrets/client-download-$index.yaml" "$runtime/secrets/client-expected-$index.yaml"
+  grep -Eqi '^cache-control:.*no-store' "$runtime/secrets/client-headers-$index.txt"
+  grep -Eqi '^content-disposition:.*attachment' "$runtime/secrets/client-headers-$index.txt"
+done
+! cmp -s "$runtime/secrets/client-download-1.yaml" "$runtime/secrets/client-download-2.yaml"
+rm -f "$runtime"/secrets/client-download-*.yaml "$runtime"/secrets/client-expected-*.yaml "$runtime"/secrets/client-headers-*.txt
+
 
 # Worker credentials may observe their own objects, never another namespace.
 worker_exec_stdin python3 - <<'PYWORKER'
@@ -93,4 +109,4 @@ for index in 1 2; do
   [[ "$rejected" != 0 && "$rejected" != 124 && "$rejected" != 137 ]] || { echo 'Expected an explicit cross-namespace TLS rejection' >&2; exit 1; }
   grep -Eqi 'alert.*(bad certificate|certificate unknown|access denied|unknown ca)|SSL alert number (42|46|48|49)' "$runtime/cross-namespace-tls-$index.log"
 done
-printf '%s\n' '{"namespacedJoinCommands":true,"workerNamespaceRestricted":true,"clientSecretsPrivate":true,"crossNamespaceClientsRejected":true}' > "$runtime/namespace-isolation.json"
+printf '%s\n' '{"namespacedJoinCommands":true,"workerNamespaceRestricted":true,"workerCannotReadClientSecrets":true,"selectedClientDownloadsMatch":true,"crossNamespaceClientsRejected":true}' > "$runtime/namespace-isolation.json"

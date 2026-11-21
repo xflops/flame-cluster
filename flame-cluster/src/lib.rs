@@ -1,4 +1,5 @@
 mod actions;
+mod client_config;
 pub mod connection;
 mod join;
 mod listing;
@@ -48,6 +49,7 @@ fn resource_routes() -> Router<AppState> {
     Router::new()
         .route("/connection", get(connection))
         .route("/join", get(join::command))
+        .route("/flame.yaml", get(client_config::download))
         .route("/{resource}", get(listing::resources))
         .route("/sessions/{id}/tasks", get(listing::tasks))
         .route("/sessions/{id}/actions/{action}", post(actions::action))
@@ -59,6 +61,7 @@ fn build_router(default: AppState, connections: Vec<(String, AppState)>) -> Rout
         .map(|(id, state)| {
             let mut metadata = json!({
                 "id":id, "endpoint":state.endpoint, "displayName":state.display_name,
+                "clientConfigAvailable":state.client_config_secret.is_some(),
             });
             if let Some(namespace) = &state.namespace {
                 metadata["namespace"] = json!(namespace);
@@ -128,7 +131,7 @@ async fn trusted_host(State(state): State<AppState>, request: Request, next: Nex
 }
 
 async fn connection(State(state): State<AppState>) -> Json<Value> {
-    let mut metadata = json!({"endpoint":state.endpoint,"displayName":state.display_name});
+    let mut metadata = json!({"endpoint":state.endpoint,"displayName":state.display_name,"clientConfigAvailable":state.client_config_secret.is_some()});
     if let Some(namespace) = state.namespace {
         metadata["namespace"] = json!(namespace);
     }

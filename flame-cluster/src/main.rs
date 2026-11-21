@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let configs = load_connections()?;
     let kube_client = if configs
         .iter()
-        .any(|(_, config)| config.join_secret.is_some())
+        .any(|(_, config)| config.join_secret.is_some() || config.client_config_secret.is_some())
     {
         Some(kube::Client::try_default().await?)
     } else {

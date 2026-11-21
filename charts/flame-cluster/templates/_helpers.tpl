@@ -89,7 +89,7 @@ gateway:
 {{- if and (eq (len $flames) 1) $.Values.cluster.flame.endpoint -}}
 {{- $endpoint = $.Values.cluster.flame.endpoint -}}
 {{- end -}}
-{{- $connection := dict "id" $flame.name "endpoint" $endpoint "displayName" (printf "%s/%s" $flame.namespace $flame.name) "namespace" $flame.namespace "caFile" (printf "%s/ca.crt" $directory) "joinNamespace" $flame.namespace "joinSecret" (printf "%s-join" $flame.name) -}}
+{{- $connection := dict "id" $flame.name "name" $flame.name "endpoint" $endpoint "displayName" (printf "%s/%s" $flame.namespace $flame.name) "namespace" $flame.namespace "caFile" (printf "%s/ca.crt" $directory) "joinNamespace" $flame.namespace "joinSecret" (printf "%s-join" $flame.name) "clientConfigSecret" (printf "%s-client" $flame.name) -}}
 {{- $connections = append $connections $connection -}}
 {{- end -}}
 {{- toPrettyJson $connections -}}

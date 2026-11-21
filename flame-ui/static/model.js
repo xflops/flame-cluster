@@ -1,5 +1,5 @@
 export const views = {
-  nodes: { title: 'Nodes', description: 'The machines powering your cluster.', states: ['Unknown', 'Ready', 'Not ready'] },
+  nodes: { title: 'Nodes', description: 'Enrolled workers and their reported status.', states: ['Pending', 'Ready', 'Not ready', 'Disabled', 'Deleting'] },
   executors: { title: 'Executors', description: 'See where application services are running.', states: ['Unknown', 'Void', 'Idle', 'Binding', 'Bound', 'Unbinding', 'Releasing', 'Released'] },
   applications: { title: 'Applications', description: 'Your services and runtimes, ready for work.', states: ['Enabled', 'Disabled'] },
   sessions: { title: 'Sessions', description: 'Follow workloads from the queue to completion.', states: ['Open', 'Closed', 'Suspending', 'Suspended'] },
@@ -19,7 +19,7 @@ export function bytes(value) {
 }
 export const nameOf = row => row.metadata?.name || row.metadata?.id || 'Unnamed';
 export const idOf = row => row.metadata?.id || row.metadata?.name || '';
-export const stateOf = (row, kind) => row.status ? (kind === 'tasks' ? taskStates : views[kind]?.states)?.[row.status.state] || 'Unknown' : 'Unknown';
+export const stateOf = (row, kind) => kind === 'nodes' ? row.readiness || 'Pending' : row.status ? (kind === 'tasks' ? taskStates : views[kind]?.states)?.[row.status.state] || 'Unknown' : 'Unknown';
 export const shim = value => ({ 0: 'Host', 1: 'Wasm', 3: 'CRI' }[value] || 'Unknown');
 export function parseRoute(hash) {
   const view = hash.replace(/^#\/?/, '');

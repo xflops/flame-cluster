@@ -47,7 +47,7 @@ pub(crate) async fn command(State(state): State<AppState>) -> Result<Json<Value>
         return Err(unavailable());
     }
     Ok(Json(json!({
-        "command": format!("sudo sh setup.sh --join '{token}'"),
+        "command": format!("curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '{token}'"),
         "expiresAt": expires_at.to_rfc3339(),
     })))
 }

@@ -11,7 +11,6 @@ use tower::ServiceExt;
 
 #[derive(Default)]
 struct Flame {
-    fail_nodes: bool,
     name_prefix: String,
     calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -131,33 +130,9 @@ impl frontend_server::Frontend for Flame {
 
     async fn list_nodes(
         &self,
-        request: GrpcRequest<ListNodesRequest>,
+        _: GrpcRequest<ListNodesRequest>,
     ) -> Result<GrpcResponse<NodeList>, Status> {
-        self.calls.lock().unwrap().push("nodes".into());
-        let mut paging = request.into_inner().paging.unwrap();
-        assert_eq!(paging.limit, 12, "request only the displayed page");
-        assert!(
-            [1, 84].contains(&paging.number),
-            "must not traverse other pages"
-        );
-        if self.fail_nodes {
-            return Err(Status::unavailable("SYNTHETIC_SECRET_NODES"));
-        }
-        let offset = (paging.number - 1) * i64::from(paging.limit);
-        paging.total = Some(1003);
-        Ok(GrpcResponse::new(NodeList {
-            nodes: (offset..1003)
-                .take(paging.limit as usize)
-                .map(|i| Node {
-                    metadata: Some(Metadata {
-                        name: format!("{}worker-{}", self.name_prefix, i + 1),
-                        id: String::new(),
-                    }),
-                    ..Default::default()
-                })
-                .collect(),
-            paging: Some(paging),
-        }))
+        panic!("Nodes must read FlameWorkers, never the FLM inventory")
     }
     async fn list_applications(
         &self,
@@ -196,10 +171,22 @@ impl frontend_server::Frontend for Flame {
         &self,
         request: GrpcRequest<ListSessionsRequest>,
     ) -> Result<GrpcResponse<SessionList>, Status> {
+        self.calls.lock().unwrap().push("sessions".into());
         let mut paging = request.into_inner().paging.unwrap();
-        paging.total = Some(0);
+        let sessions = if self.name_prefix.is_empty() {
+            vec![]
+        } else {
+            vec![Session {
+                metadata: Some(Metadata {
+                    id: format!("{}session", self.name_prefix),
+                    name: format!("{}session", self.name_prefix),
+                }),
+                ..Default::default()
+            }]
+        };
+        paging.total = Some(sessions.len() as u64);
         Ok(GrpcResponse::new(SessionList {
-            sessions: vec![],
+            sessions,
             paging: Some(paging),
         }))
     }
@@ -207,7 +194,7 @@ impl frontend_server::Frontend for Flame {
         &self,
         _: GrpcRequest<ListExecutorsRequest>,
     ) -> Result<GrpcResponse<ExecutorList>, Status> {
-        Err(Status::unavailable("executor service unavailable"))
+        Err(Status::unavailable("SYNTHETIC_SECRET_EXECUTORS"))
     }
     async fn list_tasks(
         &self,
@@ -319,12 +306,12 @@ async fn join_command_reads_rotating_credentials_and_refuses_expired_or_invalid_
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             data,
-            json!({"command":format!("sudo sh setup.sh --join '{token}'"),"expiresAt":expiry})
+            json!({"command":format!("curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '{token}'"),"expiresAt":expiry})
         );
         let (_, connection) = get(app.clone(), "/api/connection").await;
         assert_eq!(
             connection,
-            json!({"endpoint":"http://127.0.0.1:9","displayName":"Flame"})
+            json!({"endpoint":"http://127.0.0.1:9","displayName":"Flame","clientConfigAvailable":false})
         );
     }
     for token in ["", "unsafe'$(id)", "not base64"] {
@@ -386,7 +373,7 @@ async fn connection_and_health_need_no_upstream_or_kubernetes() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         data,
-        json!({"endpoint":"http://127.0.0.1:9","displayName":"Training"})
+        json!({"endpoint":"http://127.0.0.1:9","displayName":"Training","clientConfigAvailable":false})
     );
     assert_eq!(get(app.clone(), "/healthz").await.0, StatusCode::OK);
     for path in [
@@ -407,13 +394,11 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
     let (mut first, stop_first) = frontend(Flame {
         name_prefix: "first-".into(),
         calls: first_calls.clone(),
-        ..Default::default()
     })
     .await;
     let (mut second, stop_second) = frontend(Flame {
         name_prefix: "second-".into(),
         calls: second_calls.clone(),
-        ..Default::default()
     })
     .await;
     first.display_name = "First Flame".into();
@@ -432,8 +417,8 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
         state.join_expiry_file = Some(expiry_path);
     }
     let expected_catalog = json!({"items":[
-        {"id":"flame-1","endpoint":first.endpoint,"displayName":"First Flame"},
-        {"id":"flame-0","endpoint":second.endpoint,"displayName":"Second Flame"}
+        {"id":"flame-1","endpoint":first.endpoint,"displayName":"First Flame","clientConfigAvailable":false},
+        {"id":"flame-0","endpoint":second.endpoint,"displayName":"Second Flame","clientConfigAvailable":false}
     ]});
     let app = fleet_router(vec![("flame-1".into(), first), ("flame-0".into(), second)]).unwrap();
     let (status, catalog) = get(app.clone(), "/api/connections").await;
@@ -447,15 +432,12 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
     assert!(first_calls.lock().unwrap().is_empty());
     assert!(second_calls.lock().unwrap().is_empty());
 
-    let (_, first_nodes) = get(app.clone(), "/api/nodes").await;
-    assert_eq!(
-        first_nodes["items"][0]["metadata"]["name"],
-        "first-worker-1"
-    );
-    let (_, second_nodes) = get(app.clone(), "/api/connections/flame-0/nodes").await;
+    let (_, first_nodes) = get(app.clone(), "/api/sessions").await;
+    assert_eq!(first_nodes["items"][0]["metadata"]["name"], "first-session");
+    let (_, second_nodes) = get(app.clone(), "/api/connections/flame-0/sessions").await;
     assert_eq!(
         second_nodes["items"][0]["metadata"]["name"],
-        "second-worker-1"
+        "second-session"
     );
     let (status, _) = get(app.clone(), "/api/connections/flame-0/sessions/open/tasks").await;
     assert_eq!(status, StatusCode::OK);
@@ -474,10 +456,10 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
         .await
         .unwrap();
     assert_eq!(mutation.status(), StatusCode::OK);
-    assert_eq!(first_calls.lock().unwrap().as_slice(), ["nodes"]);
+    assert_eq!(first_calls.lock().unwrap().as_slice(), ["sessions"]);
     assert_eq!(
         second_calls.lock().unwrap().as_slice(),
-        ["nodes", "tasks:open", "close:open"]
+        ["sessions", "tasks:open", "close:open"]
     );
     for (path, token) in [
         ("/api/join", "Zmlyc3Q="),
@@ -488,7 +470,9 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body["command"],
-            format!("sudo sh setup.sh --join '{token}'")
+            format!(
+                "curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '{token}'"
+            )
         );
     }
     std::fs::write(
@@ -511,7 +495,7 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
     ] {
         assert_eq!(get(app.clone(), path).await.0, StatusCode::NOT_FOUND);
     }
-    for path in ["/api/connections", "/api/connections/flame-0/nodes"] {
+    for path in ["/api/connections", "/api/connections/flame-0/sessions"] {
         let response = app
             .clone()
             .oneshot(
@@ -541,7 +525,7 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
     assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
     assert_eq!(
         second_calls.lock().unwrap().as_slice(),
-        ["nodes", "tasks:open", "close:open"]
+        ["sessions", "tasks:open", "close:open"]
     );
     let _ = stop_first.send(());
     let _ = stop_second.send(());
@@ -662,7 +646,9 @@ async fn managed_join_lookups_are_exact_and_isolated_to_each_flame_namespace() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body["command"],
-            format!("sudo sh setup.sh --join '{token}'")
+            format!(
+                "curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '{token}'"
+            )
         );
         assert!(!body.to_string().contains("PRIVATE_KEY"));
     }
@@ -702,20 +688,11 @@ async fn managed_join_lookups_are_exact_and_isolated_to_each_flame_namespace() {
 }
 
 #[tokio::test]
-async fn lists_one_native_node_page_and_preserves_total_and_order() {
+async fn standalone_nodes_are_unavailable_without_falling_back_to_flm_inventory() {
     let (state, stop) = frontend(Flame::default()).await;
-    let app = router(state);
-    let (status, first) = get(app.clone(), "/api/nodes").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(first["total"], 1003);
-    assert_eq!(first["items"].as_array().unwrap().len(), 12);
-    assert_eq!(first["items"][0]["metadata"]["name"], "worker-1");
-    assert_eq!(first["hasNext"], true);
-    let (status, last) = get(app, "/api/nodes?page=84").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(last["items"].as_array().unwrap().len(), 7);
-    assert_eq!(last["items"][0]["metadata"]["name"], "worker-997");
-    assert_eq!(last["hasNext"], false);
+    let (status, body) = get(router(state), "/api/nodes").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body.get("items").is_none());
     let _ = stop.send(());
 }
 
@@ -737,13 +714,9 @@ async fn forwards_native_state_filter_and_paging_without_sorting_locally() {
 
 #[tokio::test]
 async fn upstream_failure_is_not_reported_as_a_healthy_empty_list() {
-    let (state, stop) = frontend(Flame {
-        fail_nodes: true,
-        ..Default::default()
-    })
-    .await;
+    let (state, stop) = frontend(Flame::default()).await;
     let app = router(state);
-    let (status, data) = get(app.clone(), "/api/nodes").await;
+    let (status, data) = get(app.clone(), "/api/executors").await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(data["error"], "Flame upstream request failed");
     let (status, data) = get(app, "/api/sessions").await;
@@ -1045,12 +1018,8 @@ async fn upstream_secrets_are_absent_from_responses_and_logs() {
     // Capture warnings from the HTTP handler and any spawned transport tasks.
     tracing::subscriber::set_global_default(subscriber).unwrap();
     {
-        let (state, stop) = frontend(Flame {
-            fail_nodes: true,
-            ..Default::default()
-        })
-        .await;
-        for path in ["/api/nodes", "/api/sessions/secret-error/tasks"] {
+        let (state, stop) = frontend(Flame::default()).await;
+        for path in ["/api/executors", "/api/sessions/secret-error/tasks"] {
             let (status, body) = get(router(state.clone()), path).await;
             assert_eq!(status, StatusCode::BAD_GATEWAY);
             assert_eq!(body, json!({"error":"Flame upstream request failed"}));
@@ -1164,4 +1133,472 @@ async fn api_hosts_require_explicit_trust_and_health_probes_are_exempt() {
         assert_eq!(response.status(), status);
     }
     let _ = stop.send(());
+}
+
+#[tokio::test]
+async fn client_bundle_downloads_use_only_the_selected_namespace_secret_and_attachment_headers() {
+    use k8s_openapi::{ByteString, api::core::v1::Secret};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    let first_bundle =
+        "current-context: first\ncontexts:\n  - name: first\n    key_data: PRIVATE_FIRST\n";
+    let second_bundle =
+        "current-context: second\ncontexts:\n  - name: second\n    key_data: PRIVATE_SECOND\n";
+    let first_path = "/api/v1/namespaces/flame-ns-1/secrets/flame-1-client";
+    let second_path = "/api/v1/namespaces/flame-ns-2/secrets/flame-2-client";
+    let replies = Arc::new(Mutex::new(BTreeMap::new()));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    for (path, bundle) in [(first_path, first_bundle), (second_path, second_bundle)] {
+        let secret = Secret {
+            data: Some(BTreeMap::from([
+                ("flame.yaml".into(), ByteString(bundle.as_bytes().to_vec())),
+                (
+                    "tls.key".into(),
+                    ByteString(b"NEVER_RETURN_OTHER_SECRET_KEYS".to_vec()),
+                ),
+            ])),
+            ..Default::default()
+        };
+        replies.lock().unwrap().insert(
+            path.to_owned(),
+            (StatusCode::OK, serde_json::to_value(secret).unwrap()),
+        );
+    }
+    let lookup = replies.clone();
+    let requests = paths.clone();
+    let client = kube::Client::new(
+        tower::service_fn(move |request: Request<kube::client::Body>| {
+            assert_eq!(request.method(), "GET");
+            let path = request.uri().path().to_owned();
+            requests.lock().unwrap().push(path.clone());
+            let (status, body) = lookup
+                .lock()
+                .unwrap()
+                .get(&path)
+                .cloned()
+                .expect("only configured client Secret reads are allowed");
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    axum::http::Response::builder()
+                        .status(status)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+            }
+        }),
+        "management",
+    );
+    let mut configs = Vec::new();
+    for number in 1..=2 {
+        let mut config = ConnectionConfig::new(format!("http://flame-{number}:8080"));
+        config.namespace = Some(format!("flame-ns-{number}"));
+        config.client_config_secret = Some(format!("flame-{number}-client"));
+        assert!(
+            AppState::connect(config.clone()).is_err(),
+            "client-only Secret sources also require Kubernetes initialization"
+        );
+        configs.push((
+            format!("flame-{number}"),
+            AppState::connect_with_kubernetes(config, Some(client.clone())).unwrap(),
+        ));
+    }
+    configs.push((
+        "standalone".into(),
+        AppState::connect(ConnectionConfig::new("http://standalone:8080")).unwrap(),
+    ));
+    let app = fleet_router(configs).unwrap();
+    let (_, metadata) = get(app.clone(), "/api/connections").await;
+    assert_eq!(metadata["items"][0]["clientConfigAvailable"], true);
+    assert_eq!(metadata["items"][1]["clientConfigAvailable"], true);
+    assert_eq!(metadata["items"][2]["clientConfigAvailable"], false);
+    for text in [
+        "flame-1-client",
+        "flame-2-client",
+        "PRIVATE_FIRST",
+        "PRIVATE_SECOND",
+        "NEVER_RETURN_OTHER_SECRET_KEYS",
+    ] {
+        assert!(!metadata.to_string().contains(text));
+    }
+    for uri in ["/api/connection", "/api/connections/flame-2/connection"] {
+        let (_, metadata) = get(app.clone(), uri).await;
+        assert_eq!(metadata["clientConfigAvailable"], true);
+        assert!(!metadata.to_string().contains("clientConfigSecret"));
+    }
+    assert!(
+        paths.lock().unwrap().is_empty(),
+        "metadata does not read private bundles"
+    );
+    for (uri, bundle) in [
+        ("/api/flame.yaml", first_bundle),
+        (
+            "/api/connections/flame-2/flame.yaml?namespace=flame-ns-1&secret=flame-1-client",
+            second_bundle,
+        ),
+        ("/api/connections/flame-1/flame.yaml", first_bundle),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("host", "localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "application/yaml");
+        assert_eq!(
+            response.headers()["content-disposition"],
+            "attachment; filename=\"flame.yaml\""
+        );
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), bundle.as_bytes());
+    }
+    assert_eq!(
+        paths.lock().unwrap().as_slice(),
+        [first_path, second_path, first_path]
+    );
+    let previous = paths.lock().unwrap().len();
+    assert_eq!(
+        get(app.clone(), "/api/connections/standalone/flame.yaml")
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        get(app.clone(), "/api/connections/unknown/flame.yaml")
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let rejected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/connections/flame-1/flame.yaml")
+                .header("host", "attacker.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    assert_eq!(paths.lock().unwrap().len(), previous);
+
+    let malformed = |bytes: Vec<u8>| {
+        serde_json::to_value(Secret {
+            data: Some(BTreeMap::from([("flame.yaml".into(), ByteString(bytes))])),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    for (status, body) in [
+        (
+            StatusCode::FORBIDDEN,
+            json!({"kind":"Status","apiVersion":"v1","status":"Failure","message":"PRIVATE_FORBIDDEN","reason":"Forbidden","code":403}),
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            json!({"kind":"Status","apiVersion":"v1","status":"Failure","message":"PRIVATE_MISSING","reason":"NotFound","code":404}),
+        ),
+        (
+            StatusCode::OK,
+            serde_json::to_value(Secret::default()).unwrap(),
+        ),
+        (
+            StatusCode::OK,
+            json!({"apiVersion":"v1","kind":"Secret","data":{"tls.key":"UFJJVkFURV9PTkxZ"}}),
+        ),
+        (StatusCode::OK, malformed(vec![0xff, 0xfe])),
+        (StatusCode::OK, malformed(vec![])),
+        (StatusCode::OK, malformed(b" \n\t".to_vec())),
+    ] {
+        replies
+            .lock()
+            .unwrap()
+            .insert(second_path.into(), (status, body));
+        let (status, error) = get(app.clone(), "/api/connections/flame-2/flame.yaml").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            error,
+            json!({"error":"The selected Flame's client configuration is unavailable. Refresh and retry."})
+        );
+    }
+    let rotated = "current-context: first-rotated\n";
+    replies.lock().unwrap().insert(
+        first_path.into(),
+        (StatusCode::OK, malformed(rotated.as_bytes().to_vec())),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/connections/flame-1/flame.yaml")
+                .header("host", "localhost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        rotated.as_bytes()
+    );
+    assert!(
+        paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| path == first_path || path == second_path)
+    );
+}
+
+#[tokio::test]
+async fn standalone_client_bundle_is_unavailable_without_a_configured_secret() {
+    let app = router(AppState::connect(ConnectionConfig::new("http://127.0.0.1:9")).unwrap());
+    assert_eq!(
+        get(app.clone(), "/api/flame.yaml").await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let (_, metadata) = get(app, "/api/connection").await;
+    assert_eq!(metadata["clientConfigAvailable"], false);
+}
+
+fn worker_record(namespace: &str, cluster: &str, name: &str) -> Value {
+    json!({"apiVersion":"flame.xflops.io/v1alpha1","kind":"FlameWorker",
+        "metadata":{"name":name,"namespace":namespace,"generation":1},
+        "spec":{"clusterRef":cluster,"address":"192.168.3.8","maxExecutors":7,"manageObjectCache":false}})
+}
+
+#[tokio::test]
+async fn nodes_show_namespaced_enrolled_workers_before_fem_and_filter_sort_and_page_reports() {
+    use std::sync::{Arc, Mutex};
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let requests = paths.clone();
+    let mut ready = worker_record("flame-ns-1", "flame-1", "zulu");
+    ready["metadata"]["annotations"] = json!({"genuine":"annotation"});
+    ready["status"] = json!({"observedGeneration":1,"registered":true,"fem":{"activeState":"active"},
+        "lastHeartbeatTime":chrono::Utc::now().to_rfc3339(),"conditions":[{"type":"Ready","status":"True","observedGeneration":1}],"futureGenuineField":"preserved"});
+    let first_ready = ready.clone();
+    let mut disabled = worker_record("flame-ns-1", "flame-1", "alpha");
+    disabled["spec"]["disabled"] = json!(true);
+    let mut not_ready = worker_record("flame-ns-1", "flame-1", "beta");
+    not_ready["status"] = json!({"observedGeneration":1,"registered":false});
+    let mut deleting = worker_record("flame-ns-1", "flame-1", "gamma");
+    deleting["metadata"]["deletionTimestamp"] = json!(chrono::Utc::now().to_rfc3339());
+    let client = kube::Client::new(
+        tower::service_fn(move |request: Request<kube::client::Body>| {
+            assert_eq!(request.method(), "GET");
+            assert!(request.uri().query().unwrap().contains("limit=500"));
+            let path = request.uri().path().to_owned();
+            requests.lock().unwrap().push(path.clone());
+            let continued = request.uri().query().unwrap().contains("continue=next");
+            let (items, metadata) = match path.as_str() {
+                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-1/flameworkers"
+                    if !continued =>
+                {
+                    (
+                        vec![
+                            first_ready.clone(),
+                            worker_record("flame-ns-1", "another-flame", "unrelated"),
+                            worker_record("flame-ns-1", "flame-1", "pending"),
+                        ],
+                        json!({"resourceVersion":"7","continue":"next","remainingItemCount":3}),
+                    )
+                }
+                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-1/flameworkers" => (
+                    vec![disabled.clone(), not_ready.clone(), deleting.clone()],
+                    json!({"resourceVersion":"7"}),
+                ),
+                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-2/flameworkers" => (
+                    vec![worker_record("flame-ns-2", "flame-2", "second-only")],
+                    json!({"resourceVersion":"8"}),
+                ),
+                _ => panic!("unexpected Kubernetes path {path}"),
+            };
+            async move {
+                Ok::<_,std::convert::Infallible>(axum::http::Response::builder().header("content-type","application/json")
+            .body(Body::from(json!({"apiVersion":"flame.xflops.io/v1alpha1","kind":"FlameWorkerList","metadata":metadata,"items":items}).to_string())).unwrap())
+            }
+        }),
+        "management",
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (mut first, stop) = frontend(Flame {
+        calls: calls.clone(),
+        ..Default::default()
+    })
+    .await;
+    first.namespace = Some("flame-ns-1".into());
+    first.name = Some("flame-1".into());
+    first.kube_client = Some(client.clone());
+    let mut second = first.clone();
+    second.namespace = Some("flame-ns-2".into());
+    second.name = Some("flame-2".into());
+    let app = fleet_router(vec![("flame-1".into(), first), ("flame-2".into(), second)]).unwrap();
+    let (status, page) = get(app.clone(), "/api/nodes?pageSize=2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["total"], 5);
+    assert_eq!(page["hasNext"], true);
+    assert_eq!(page["items"][0]["metadata"]["name"], "alpha");
+    assert_eq!(page["items"][1]["metadata"]["name"], "beta");
+    let (_, page) = get(
+        app.clone(),
+        "/api/connections/flame-1/nodes?page=2&pageSize=2",
+    )
+    .await;
+    assert_eq!(page["items"][0]["readiness"], "Deleting");
+    assert_eq!(page["items"][1]["readiness"], "Pending");
+    assert!(
+        page["items"][1].get("status").is_none(),
+        "pending enrollment is genuine even before any FEM report"
+    );
+    let (_, last) = get(
+        app.clone(),
+        "/api/connections/flame-1/nodes?page=3&pageSize=2",
+    )
+    .await;
+    assert_eq!(last["hasNext"], false);
+    assert_eq!(last["items"][0]["readiness"], "Ready");
+    let mut expected = ready;
+    expected["readiness"] = json!("Ready");
+    assert_eq!(last["items"][0], expected);
+    for (filter, name) in [
+        ("Pending", "pending"),
+        ("Ready", "zulu"),
+        ("Not%20ready", "beta"),
+        ("Disabled", "alpha"),
+        ("Deleting", "gamma"),
+    ] {
+        let (status, filtered) = get(
+            app.clone(),
+            &format!("/api/connections/flame-1/nodes?state={filter}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["items"][0]["metadata"]["name"], name);
+    }
+    let (_, second) = get(app.clone(), "/api/connections/flame-2/nodes").await;
+    assert_eq!(second["total"], 1);
+    assert_eq!(second["items"][0]["metadata"]["name"], "second-only");
+    assert_eq!(second["items"][0]["readiness"], "Pending");
+    let before = paths.lock().unwrap().len();
+    assert_eq!(
+        get(app, "/api/connections/flame-1/nodes?state=Unknown")
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(paths.lock().unwrap().len(), before);
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "worker inventory never calls FLM, even when FEM is not registered"
+    );
+    let _ = stop.send(());
+}
+
+#[tokio::test]
+async fn worker_inventory_errors_and_incomplete_or_invalid_chunks_never_return_partial_lists() {
+    use std::sync::{Arc, Mutex};
+    for mode in [
+        "forbidden",
+        "partial-error",
+        "cycle",
+        "too-large",
+        "cross-namespace",
+        "malformed",
+        "too-many-pages",
+    ] {
+        let requests = Arc::new(Mutex::new(0usize));
+        let count = requests.clone();
+        let client = kube::Client::new(
+            tower::service_fn(move |request: Request<kube::client::Body>| {
+                assert_eq!(
+                    request.uri().path(),
+                    "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-1/flameworkers"
+                );
+                let number = {
+                    let mut count = count.lock().unwrap();
+                    *count += 1;
+                    *count
+                };
+                let fail = mode == "forbidden" || (mode == "partial-error" && number > 1);
+                let (status, body) = if fail {
+                    (
+                        StatusCode::FORBIDDEN,
+                        json!({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","message":"PRIVATE_KUBE_ERROR","code":403}),
+                    )
+                } else {
+                    let mut row =
+                        worker_record("flame-ns-1", "flame-1", &format!("worker-{number}"));
+                    if mode == "cross-namespace" {
+                        row["metadata"]["namespace"] = json!("another-namespace");
+                    }
+                    if mode == "malformed" {
+                        row["spec"] = json!({});
+                    }
+                    let items = if mode == "cycle" {
+                        vec![]
+                    } else if mode == "too-large" {
+                        (0..501)
+                            .map(|index| {
+                                worker_record("flame-ns-1", "flame-1", &format!("worker-{index}"))
+                            })
+                            .collect()
+                    } else {
+                        vec![row]
+                    };
+                    let metadata = if mode == "partial-error" || mode == "cycle" {
+                        json!({"continue":"same"})
+                    } else if mode == "too-many-pages" {
+                        json!({"continue":format!("page-{number}")})
+                    } else {
+                        json!({})
+                    };
+                    (
+                        StatusCode::OK,
+                        json!({"apiVersion":"flame.xflops.io/v1alpha1","kind":"FlameWorkerList","metadata":metadata,"items":items}),
+                    )
+                };
+                async move {
+                    Ok::<_, std::convert::Infallible>(
+                        axum::http::Response::builder()
+                            .status(status)
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                }
+            }),
+            "management",
+        );
+        let mut config = ConnectionConfig::new("http://127.0.0.1:9");
+        config.namespace = Some("flame-ns-1".into());
+        config.name = Some("flame-1".into());
+        let state = AppState::connect_with_kubernetes(config, Some(client)).unwrap();
+        let (status, body) = get(router(state), "/api/nodes").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{mode}");
+        assert_eq!(
+            body,
+            json!({"error":"The selected Flame's worker inventory is unavailable. Refresh and retry."})
+        );
+        if mode == "too-many-pages" {
+            assert_eq!(*requests.lock().unwrap(), 100);
+        }
+    }
 }

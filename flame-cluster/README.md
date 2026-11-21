@@ -1,8 +1,9 @@
 # Flame Cluster management service
 
 `flame-cluster` serves the REST API used by `flame-ui`. Service and Deployment
-names are `cluster`. It connects directly to configured FLMs, keeping each
-namespace's client, resource pages, actions, and enrollment credentials separate.
+names are `cluster`. Nodes reads configured namespaced FlameWorkers; workload
+resources and session actions use the selected FLM. Each namespace's client,
+resource pages, actions, and enrollment credentials remain separate.
 The combined chart always deploys this service; settings live under `cluster`.
 The `flames` list generates indexed namespaced Flame resources and connections.
 
@@ -15,25 +16,34 @@ The chart mounts an ordered JSON catalog and sets `FLAME_CONNECTIONS_FILE`:
   {
     "id": "flame-1",
     "namespace": "flame-ns-1",
+    "name": "flame-1",
     "displayName": "flame-ns-1/flame-1",
     "endpoint": "https://flame-1-session-manager.flame-ns-1.svc:8080",
     "caFile": "/etc/flame/connections/flame-1/ca.crt",
     "joinNamespace": "flame-ns-1",
-    "joinSecret": "flame-1-join"
+    "joinSecret": "flame-1-join",
+    "clientConfigSecret": "flame-1-client"
   }
 ]
 ```
 
 IDs must be unique DNS labels; order chooses the default connection. The catalog
-must not be empty. Metadata responses omit credential files and Secret names.
+must not be empty. Metadata responses omit credential files and Secret names,
+but include `clientConfigAvailable` to indicate whether a client bundle source
+is configured. `clientConfigSecret` requires an explicit valid `namespace` and
+always reads from that namespace; it has no separate namespace override.
 The UI labels the selector with the namespace and sends every operation to the
-selected connection. The backend does not discover namespaces or FLM resources
-through Kubernetes.
+selected connection. The backend does not discover namespaces. Nodes lists
+FlameWorkers through Kubernetes in the explicitly configured namespace, filtered
+by the configured Flame resource `name` (`spec.clusterRef`). Other workload
+resources use FLM.
 
-Managed enrollment reads use the mounted ServiceAccount identity with only
-`get` on the configured exact join Secret in each Flame namespace. No Secret
-listing, client private-key access, or writes are granted. TLS CA mounts contain
-public trust from the management namespace. The matching public trust is also
+The mounted ServiceAccount identity has `get`/`list` on FlameWorkers in each
+configured namespace and `get` on the configured exact join and client-config
+Secrets. No worker writes or cluster-wide worker listing are granted. No Secret
+listing or writes are granted. Client downloads return only the client Secret's
+`flame.yaml` entry, never its other data keys. TLS CA mounts contain public trust
+from the management namespace. The matching public trust is also
 provided in each Flame namespace for its operator-managed gateway.
 
 For a standalone process, the existing single-endpoint environment mode remains:
@@ -51,32 +61,61 @@ client identities and TLS settings on an HTTP endpoint are rejected.
 Standalone join files use `FLAME_JOIN_TOKEN_FILE` and `FLAME_JOIN_EXPIRY_FILE`
 together. File catalog entries can use corresponding `joinTokenFile` and
 `joinExpiryFile` fields. File and managed Kubernetes join sources cannot be
-mixed for one connection. Standalone mode requires no Kubernetes credentials.
+mixed for one connection. This environment/file-token mode requires no
+Kubernetes credentials for FLM operations. Nodes requires a configured namespace
+and Flame resource name, plus the scoped FlameWorker read identity. Without it,
+Nodes returns an unavailable error; it never substitutes FLM node registration.
+Catalog connections with managed join
+or client-config Secrets require the corresponding scoped Kubernetes identity.
 
 ## API
 
 - `GET /api/connections`: ordered public connection metadata, including namespace.
 - `GET /api/connections/{id}/connection`: selected endpoint/display metadata.
 - `GET /api/connections/{id}/join`: selected join command and expiration.
-- `GET /api/connections/{id}/{nodes|applications|sessions|executors}`.
+- `GET /api/connections/{id}/flame.yaml`: selected client YAML as a `flame.yaml` attachment.
+- `GET /api/connections/{id}/nodes`: namespace-scoped FlameWorkers filtered by the selected Flame, with raw resource fields plus `readiness` (Pending, Ready, Not ready, Disabled, or Deleting).
+- `GET /api/connections/{id}/{applications|sessions|executors}`: selected FLM resources.
 - `GET /api/connections/{id}/sessions/{session}/tasks`.
 - `POST /api/connections/{id}/sessions/{session}/actions/{suspend|resume|close|delete}` with JSON `{}`.
 - `GET /healthz`: process health, independent of FLM availability.
 
-Existing `/api/connection`, `/api/join`, and resource/action paths remain aliases
+Existing `/api/connection`, `/api/join`, `/api/flame.yaml`, and resource/action paths remain aliases
 for the first configured connection. Unknown connection IDs return 404. Each
 route is bound to that connection's own FLM client and enrollment source.
 
-Lists forward one native FLM page/filter, without local sorting or full-inventory
+FLM resource lists forward one native FLM page/filter, without local sorting or full-inventory
 downloads. Responses include `items`, `page`, `pageSize`, `total`, `hasNext`, and
 `observedAt`. `pageSize` is 1–100, default 12. Invalid filters/pagination are
 rejected; upstream failures return HTTP 502, never a fake healthy empty list.
 Application responses omit credentials, environment variables, and task payloads.
 
+Nodes sorts workers by name, filters by readiness, then paginates. Enrolled
+workers without a current status report appear as Pending. Ready requires a
+current Ready condition, FEM registration and active service, a heartbeat no
+older than 120 seconds, and active ready cache service when managed. Kubernetes
+inventory reads are limited to 100 chunks of 500 workers and 12 seconds. Read
+failures, invalid responses, or incomplete inventories return HTTP 503 without
+partial results.
+
 Join responses are generated on demand. Missing, denied, malformed, or expired
 credentials return HTTP 503 without a command. All API responses use
-`Cache-Control: no-store`. The copied command uses local `setup.sh`; prepare that
-installer on the host. Flmlet installs FEM, writes configuration, and starts it.
+`Cache-Control: no-store`. The copied join command downloads the cluster
+installer from xflops.io and runs it on the worker host:
+
+```sh
+curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join 'TOKEN'
+```
+
+Flmlet installs FEM, writes configuration, and activates the selected services.
+
+Settings also downloads the selected Flame's `flame.yaml`. Each request reads
+the current configured Secret; the response uses `application/yaml`, attachment
+filename `flame.yaml`, `X-Content-Type-Options: nosniff`, and `Cache-Control:
+no-store`. Missing, denied, invalid UTF-8, or empty bundles return a generic
+HTTP 503. The download contains the selected Flame's embedded client certificate
+and private key. Keep the exported file private and refresh it separately when
+the client certificate renews; it is not included in metadata or join responses.
 
 ## Access
 
@@ -91,5 +130,6 @@ The central management UI/API is administrative access to all configured Flames.
 Expose it through trusted access or an authentication proxy. Per-namespace worker
 and gateway-client credentials remain separate. See [security](../docs/security.md).
 
-`cargo test -p flame-cluster` uses mock FLMs, mock Kubernetes Secret endpoints,
-and temporary OpenSSL certificates to verify connection and credential isolation.
+`cargo test -p flame-cluster` uses mock FLMs, mock Kubernetes worker and Secret
+endpoints, and temporary OpenSSL certificates to verify inventory, connection,
+and credential isolation.

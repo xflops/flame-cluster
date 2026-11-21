@@ -6,14 +6,24 @@ The root URL `/` opens the first configured Flame's Applications view
 Switching namespaces preserves the resource view while clearing pages, filters,
 drawers, pending requests, and credentials from the previous Flame.
 
-Navigation is Nodes, Executors, Applications, Sessions, Settings. Settings shows
-the selected connection and current join command/expiration. Join tokens are
-loaded only in Settings and are never cached across namespace changes. Expired
-or unavailable tokens do not produce a copyable command.
+Navigation is Nodes, Executors, Applications, Sessions, Settings. Nodes lists
+enrolled FlameWorkers in the selected namespace, including Pending workers that
+have not registered with FLM yet. It shows worker readiness, address, reported
+FEM/cache service states, runtimes, executor limit, and heartbeat. Unreported
+values remain unavailable; no hardware capacity is inferred.
+
+Settings shows the selected connection, a Download flame.yaml button when a
+client bundle is configured, and the current join command/expiration. Downloads
+contain the selected namespace's client configuration and are never rendered in
+the page. The copyable join command downloads the hosted installer, so the worker
+does not need a local setup.sh. Join tokens are loaded only in Settings and are
+never cached across namespace changes. Expired or unavailable tokens do not
+produce a copyable command.
 
 The browser first reads `/api/connections`, then scopes reads, session actions,
-and task pages to `/api/connections/{id}/...`. It queries configured FLMs through
-the management service, not Kubernetes inventory. See
+and task pages to `/api/connections/{id}/...`. The management service reads Nodes
+from namespaced FlameWorkers filtered to the selected Flame. Applications,
+sessions, tasks, and executors come from that Flame's configured FLM. See
 [backend configuration](../flame-cluster/README.md).
 
 Compact density is the default for the header, sidebar, table rows, controls,

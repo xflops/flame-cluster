@@ -63,12 +63,19 @@ named worker/FlameCluster in that namespace. Cross-namespace worker reads and
 client Secret reads are forbidden. Gateway client URI SANs bind namespace, Flame
 name, and UID, preventing a client identity from authenticating to another Flame.
 
-The central management ServiceAccount receives only `get` on each configured
-namespace's exact join Secret. It cannot list Secrets, write them, or read client
-private keys. Connection metadata is an explicit ordered catalog, and the UI
-shows namespace labels; switching namespaces changes the FLM client and join
-source together. Administrative UI/API access still spans all configured Flames;
-namespace scoping is not an end-user login/authorization system.
+The central management ServiceAccount receives `get`/`list` on FlameWorkers in
+each configured namespace, and `get` on that namespace's exact join and
+client-bundle Secrets. It cannot write workers or list them cluster-wide. The
+Nodes endpoint filters workers to the selected Flame's `spec.clusterRef` and
+does not fall back to FLM registration inventory. Settings intentionally exposes
+the selected `flame.yaml` bundle, including its TLS client private key, to trusted
+administrators. It cannot list or write Secrets, read unrelated Secrets, or
+retrieve FLM server private keys. Downloads return only the bundle entry, with
+attachment and `no-store` headers; Secret names and contents are not included in
+public connection metadata. Connection metadata is an explicit ordered catalog,
+and the UI shows namespace labels; switching namespaces changes the FLM client,
+join source, and download source together. Administrative UI/API access still
+spans all configured Flames; namespace scoping is not an end-user login/authorization system.
 
 These resource and credential boundaries do not change the native worker-port
 network boundary described above. SREs must still restrict raw NodePort and
@@ -91,7 +98,9 @@ also requires the existing host's private enrollment key. Disabled/deleting
 worker credentials revoke independently of unrelated cluster errors.
 
 Join tokens, enrollment keys and worker kubeconfigs are credentials. Restrict
-Secret access and keep host state private. `--join TOKEN` places the token in
+Secret access and keep host state private. Settings' join command fetches
+`https://xflops.io/cluster/setup.sh` and pipes it to `sudo sh -s -- --join TOKEN`;
+no pre-downloaded script is required. `--join TOKEN` places the token in
 the process argument list, where local users may be able to read it. On shared
 hosts use `--join --token-file FILE` with a private token file to avoid that
 argument exposure. Installer tracing and output do not intentionally print

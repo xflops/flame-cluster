@@ -8,8 +8,8 @@ const paths = {
   executors: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><path d="m10 10 4 2-4 2z"/>',
 };
 const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
-const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
-let catalogController, pollController, taskController, actionController, revision = 0;
+const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
+let catalogController, pollController, taskController, actionController, downloadController, revision = 0;
 const pageSize = 12;
 const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
@@ -42,9 +42,9 @@ async function loadConnections() {
 }
 function selectConnection(id) {
   if (id === state.connectionId || !state.connections?.some(connection => connection.id === id)) return;
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort();
+  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
   pageCache.clear();
-  Object.assign(state, {connectionId: id, connection: null, join: null, pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
+  Object.assign(state, {connectionId: id, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
   $('#details').close(); $('#detail-content').replaceChildren();
   render(); refresh();
 }
@@ -59,7 +59,14 @@ const badge = label => {
   return `<span class="badge ${tone}">${e(label)}</span>`;
 };
 const readiness = label => `<span class="readiness"><span class="ready-circle ${label === 'Ready' ? 'good' : label === 'Not ready' ? 'bad' : ''}" aria-hidden="true"></span>${e(label)}</span>`;
-const date = value => value ? new Date(Number(value)).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const date = value => {
+  if (!value) return '—';
+  const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
+  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
+const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
+const cacheState = row => row.spec?.manageObjectCache === false ? 'Not managed' : row.status?.objectCache?.activeState;
 const empty = (title, description, kind = state.view) => `<div class="empty">${icon(kind)}<h3>${e(title)}</h3><p>${e(description)}</p></div>`;
 function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th scope="col">${e(header)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`; }
 function resourceLink(row, index, subtitle = '', kind = state.view) {
@@ -105,6 +112,32 @@ async function actOnSession(row, action, connectionId) {
     if (generation === revision) state.errors.action = error.name === 'TimeoutError' ? 'Action timed out. Refresh before retrying.' : error.message;
   } finally {
     if (generation === revision) {state.action = null; render(); refresh();}
+  }
+}
+
+async function downloadClientConfig(connectionId) {
+  if (state.downloading || state.view !== 'settings' || connectionId !== state.connectionId) return;
+  const generation = revision, controller = new AbortController();
+  downloadController = controller;
+  state.downloading = true; state.downloadStatus = ''; render();
+  const current = () => generation === revision && state.connectionId === connectionId && state.view === 'settings';
+  try {
+    const response = await fetch(`/api/connections/${encodeURIComponent(connectionId)}/flame.yaml`, {
+      cache: 'no-store', headers: {Accept: 'application/yaml'}, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+    });
+    if (!response.ok) throw new Error('Client configuration is unavailable. Refresh and try again.');
+    const bundle = await response.blob();
+    if (!current() || controller.signal.aborted) return;
+    const url = URL.createObjectURL(bundle), link = document.createElement('a');
+    link.href = url; link.download = 'flame.yaml'; link.hidden = true;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    state.downloadStatus = 'Download started.';
+  } catch (error) {
+    if (current() && !controller.signal.aborted) state.downloadStatus = error.name === 'TimeoutError'
+      ? 'Download timed out. Try again.' : 'Unable to download flame.yaml. Refresh and try again.';
+  } finally {
+    if (current()) {state.downloading = false; render();}
   }
 }
 
@@ -161,8 +194,14 @@ function render() {
         `<tr><td>FLM endpoint</td><td>${e(state.connection.endpoint)}</td></tr>`,
       ])
       : empty(errors.length ? 'Unable to load settings' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Connection settings will appear here shortly.');
+    const clientConfigAvailable = state.connection?.clientConfigAvailable ?? selected?.clientConfigAvailable;
+    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Client configuration"><h3>Client configuration</h3><p>${clientConfigAvailable
+      ? `Download the Flame client configuration for ${e(selected?.namespace || selected?.displayName || state.connectionId)}.`
+      : 'Client configuration is unavailable for this Flame.'}</p><button class="button" id="download-config" ${!clientConfigAvailable || state.downloading ? 'disabled' : ''}>${state.downloading ? 'Downloading…' : 'Download flame.yaml'}</button><p id="download-status" role="status">${e(state.downloadStatus)}</p></section>`);
+    const downloadConnectionId = state.connectionId;
+    $('#download-config').addEventListener('click', () => downloadClientConfig(downloadConnectionId));
     const join = state.join && Date.parse(state.join.expiresAt) > Date.now() ? state.join : null;
-    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host with setup.sh installed. Flmlet installs and configures its Flame runtime.</p>${join
+    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host. It downloads the installer; Flmlet installs and configures its Flame runtime.</p>${join
       ? `<pre><code id="join-command">${e(join.command)}</code></pre><p>Expires ${e(new Date(join.expiresAt).toLocaleString())}. Refresh to get the latest command.</p><button class="button" id="copy-join">Copy join command</button><span id="copy-status" role="status"></span>`
       : `<p>${e(state.errors.join || (state.loading ? 'Loading join command…' : 'Join command unavailable. Refresh to retry.'))}</p>`}</section>`);
     $('#copy-join')?.addEventListener('click', async () => {
@@ -184,7 +223,7 @@ function render() {
     $('#content').innerHTML = empty(errors.length ? 'Unable to load data' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Live data will appear here shortly.'); return;
   }
   if (!rows.length) {
-    $('#content').innerHTML = empty(state.filter ? 'No matching resources' : `No ${state.view} yet`, state.filter ? 'Try a different state filter.' : 'Resources will appear here when they are registered with Flame.'); return;
+    $('#content').innerHTML = empty(state.filter ? 'No matching resources' : `No ${state.view} yet`, state.filter ? 'Try a different state filter.' : state.view === 'nodes' ? 'Nodes appear here when they enroll. Open Settings for the node join command.' : 'Resources will appear here when they are registered with Flame.'); return;
   }
   const displayed = rows;
   if (state.view === 'applications') {
@@ -192,11 +231,9 @@ function render() {
   } else if (state.view === 'sessions') {
     $('#content').innerHTML = table(['Session', 'State', 'Application', 'Task progress', 'Created', 'Actions'], displayed.map((row, i) => `<tr><td>${resourceLink(row, i)}</td><td>${badge(stateOf(row, 'sessions'))}</td><td>${e(row.spec?.application)}</td><td>${sessionProgress(row.status)}</td><td>${date(row.status?.creation_time)}</td><td>${sessionActions(row, i)}</td></tr>`));
   } else if (state.view === 'nodes') {
-    $('#content').innerHTML = table(['Node', 'Ready', 'CPU capacity', 'Memory', 'GPU', 'Allocatable CPU', 'System', 'Heartbeat', ''], displayed.map((row, i) => {
-      const available = row.status?.allocatable?.cpu;
-      const cpu = n(row.status?.capacity?.cpu);
-      return `<tr><td>${resourceLink(row, i, row.spec?.hostname !== nameOf(row) ? row.spec?.hostname : row.status?.info?.arch)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${cpu} <span class="dim">cores</span></td><td>${bytes(row.status?.capacity?.memory)}</td><td>${row.status?.capacity ? f(row.status.capacity.gpu) : '—'}</td><td><div class="allocation"><div class="progress-track"><span style="width:${cpu ? Math.min(100, n(available) / cpu * 100) : 0}%"></span></div><span>${available ?? '—'} <span class="dim">/ ${cpu}</span></span></div></td><td>${e(row.status?.info?.os)}<span class="secondary">${e(row.status?.info?.arch)}</span></td><td>${date(n(row.status?.last_heartbeat_time) * 1000)}</td><td class="chevron">›</td></tr>`;
-    }));
+    $('#content').innerHTML = table(['Node', 'Status', 'Address', 'FEM', 'Cache', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
+      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : row.spec?.clusterRef)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${e(row.spec?.address)}</td><td>${e(row.status?.fem?.activeState)}</td><td>${e(cacheState(row))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
+    ));
   } else {
     $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));
   }
@@ -266,11 +303,10 @@ function openDetails(row) {
     detail += '<div class="drawer-section"><h3>Command</h3></div><pre>' + e([row.spec?.command, ...(row.spec?.arguments || [])].filter(Boolean).join(' ')) + '</pre>';
     if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
   } else if (state.view === 'nodes') {
-    const info = row.status?.info || {};
-    detail += properties([['Hostname', row.spec?.hostname], ['Operating system', info.os_image || info.os], ['Architecture', info.arch], ['Kernel', info.kernel_version], ['CPU capacity', `${n(row.status?.capacity?.cpu)} cores`], ['Memory capacity', bytes(row.status?.capacity?.memory)], ['GPUs', n(row.status?.capacity?.gpu)], ['Heartbeat', date(n(row.status?.last_heartbeat_time) * 1000)], ['Runtimes', row.spec?.shims?.map(shim).join(', ')]]);
-    detail += '<div class="drawer-section"><h3>Network addresses</h3></div>' + table(['Type', 'Address'], (row.status?.addresses || []).map(a => `<tr><td>${e(a.type)}</td><td class="mono">${e(a.address)}</td></tr>`));
-    if (info.pci_devices?.length) detail += '<div class="drawer-section"><h3>PCI devices</h3></div>' + table(['Address', 'Vendor / Device', 'Driver'], info.pci_devices.map(p => `<tr><td class="mono">${e(p.address)}</td><td class="mono">${e(p.vendor_id)} / ${e(p.device_id)}</td><td>${e(p.driver)}</td></tr>`));
-    detail += '<p class="detail-note">Capacity and allocatable CPU are reported by Flame, not measured CPU utilization.</p>';
+    detail += properties([['Namespace', row.metadata?.namespace], ['Cluster', row.spec?.clusterRef], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash], ['Observed generation', row.status?.observedGeneration]]);
+    detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['FEM', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(report?.activeState)}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
+    if (row.status?.conditions?.length) detail += '<div class="drawer-section"><h3>Conditions</h3></div>' + table(['Condition', 'Status', 'Reason', 'Message'], row.status.conditions.map(condition => `<tr><td>${e(condition.type)}</td><td>${e(condition.status)}</td><td>${e(condition.reason)}</td><td>${e(condition.message)}</td></tr>`));
+    if (!row.status || !Object.keys(row.status).length) detail += '<p class="detail-note">Worker status has not been reported yet.</p>';
   } else if (state.view === 'executors') {
     detail += properties([['Node', row.spec?.node], ['Application', row.spec?.application], ['Session', row.status?.session_id], ['Runtime', shim(row.spec?.shim)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)], ['GPU request', n(row.spec?.resreq?.gpu)]]);
   } else {
@@ -306,10 +342,10 @@ async function loadTasks(row, page = 1) {
   } finally { clearTimeout(timer); }
 }
 function route() {
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort();
+  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
   state.view = parseRoute(location.hash);
   if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
-  Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null});
+  Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null, downloading: false, downloadStatus: ''});
   restorePage(); $('#details').close();
   document.title = `${views[state.view].title} · Flame Console`;
   render(); refresh();

@@ -28,6 +28,7 @@ struct FileConnection {
     join_expiry_file: Option<PathBuf>,
     join_namespace: Option<String>,
     join_secret: Option<String>,
+    client_config_secret: Option<String>,
 }
 
 pub(crate) fn validate_connection_id(id: &str) -> Result<(), ConfigError> {
@@ -82,6 +83,7 @@ fn connections_from_values(
             config.join_expiry_file = entry.join_expiry_file;
             config.join_namespace = entry.join_namespace;
             config.join_secret = entry.join_secret;
+            config.client_config_secret = entry.client_config_secret;
             if let Some(hosts) = get("CONSOLE_ALLOWED_HOSTS") {
                 config.allowed_hosts = hosts
                     .split(',')
@@ -117,6 +119,7 @@ pub struct ConnectionConfig {
     pub join_expiry_file: Option<PathBuf>,
     pub join_namespace: Option<String>,
     pub join_secret: Option<String>,
+    pub client_config_secret: Option<String>,
 }
 
 impl ConnectionConfig {
@@ -135,6 +138,7 @@ impl ConnectionConfig {
             join_expiry_file: None,
             join_namespace: None,
             join_secret: None,
+            client_config_secret: None,
         }
     }
 
@@ -170,11 +174,15 @@ impl ConnectionConfig {
             &self.name,
             &self.join_namespace,
             &self.join_secret,
+            &self.client_config_secret,
         ]
         .into_iter()
         .flatten()
         {
             validate_connection_id(value)?;
+        }
+        if self.client_config_secret.is_some() && self.namespace.is_none() {
+            return Err("clientConfigSecret requires an explicit namespace".into());
         }
         if self.join_namespace.is_some() != self.join_secret.is_some() {
             return Err("joinNamespace and joinSecret must be configured together".into());
@@ -243,6 +251,7 @@ pub struct AppState {
     pub(crate) join_expiry_file: Option<PathBuf>,
     pub(crate) join_namespace: Option<String>,
     pub(crate) join_secret: Option<String>,
+    pub(crate) client_config_secret: Option<String>,
     pub(crate) kube_client: Option<kube::Client>,
 }
 
@@ -256,8 +265,14 @@ impl AppState {
         kube_client: Option<kube::Client>,
     ) -> Result<Self, ConfigError> {
         config.validate()?;
-        if config.join_secret.is_some() && kube_client.is_none() {
-            return Err("a Kubernetes client is required for the configured join Secret".into());
+        if (config.namespace.is_some()
+            || config.join_secret.is_some()
+            || config.client_config_secret.is_some())
+            && kube_client.is_none()
+        {
+            return Err(
+                "a Kubernetes client is required for configured worker and Secret sources".into(),
+            );
         }
         let mut endpoint = Endpoint::from_shared(config.endpoint.clone())?
             .connect_timeout(Duration::from_secs(3))
@@ -290,6 +305,7 @@ impl AppState {
             join_expiry_file: config.join_expiry_file,
             join_namespace: config.join_namespace,
             join_secret: config.join_secret,
+            client_config_secret: config.client_config_secret,
             kube_client,
             allowed_hosts: config
                 .allowed_hosts
@@ -380,6 +396,9 @@ mod tests {
             r#"[{"id":"flame","endpoint":"http://flm:8080","joinNamespace":"flame-ns-1","joinSecret":"flame-join","joinTokenFile":"/token","joinExpiryFile":"/expiry"}]"#,
             r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"flame-ns-1","joinNamespace":"flame-ns-2","joinSecret":"flame-join"}]"#,
             r#"[{"id":"flame","endpoint":"http://flm:8080","joinNamespace":"../other","joinSecret":"flame-join"}]"#,
+            r#"[{"id":"flame","endpoint":"http://flm:8080","clientConfigSecret":"flame-client"}]"#,
+            r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"","clientConfigSecret":"flame-client"}]"#,
+            r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"flame-ns-1","clientConfigSecret":"../client"}]"#,
         ] {
             std::fs::write(&path, contents).unwrap();
             assert!(
@@ -416,8 +435,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("connections.json");
         std::fs::write(&path, serde_json::to_vec(&json!([
-            {"id":"flame-1","namespace":"flame-ns-1","name":"flame-1","displayName":"flame-ns-1/flame-1","endpoint":"https://flame-1-session-manager.flame-ns-1.svc:8080","joinNamespace":"flame-ns-1","joinSecret":"flame-1-join"},
-            {"id":"flame-2","namespace":"flame-ns-2","name":"flame-2","displayName":"flame-ns-2/flame-2","endpoint":"https://flame-2-session-manager.flame-ns-2.svc:8080","joinNamespace":"flame-ns-2","joinSecret":"flame-2-join"}
+            {"id":"flame-1","namespace":"flame-ns-1","name":"flame-1","displayName":"flame-ns-1/flame-1","endpoint":"https://flame-1-session-manager.flame-ns-1.svc:8080","joinNamespace":"flame-ns-1","joinSecret":"flame-1-join","clientConfigSecret":"flame-1-client"},
+            {"id":"flame-2","namespace":"flame-ns-2","name":"flame-2","displayName":"flame-ns-2/flame-2","endpoint":"https://flame-2-session-manager.flame-ns-2.svc:8080","joinNamespace":"flame-ns-2","joinSecret":"flame-2-join","clientConfigSecret":"flame-2-client"}
         ])).unwrap()).unwrap();
         let configs = connections_from_values(|name| {
             (name == "FLAME_CONNECTIONS_FILE").then(|| path.to_str().unwrap().into())
@@ -430,6 +449,10 @@ mod tests {
             assert_eq!(config.namespace, Some(format!("flame-ns-{number}")));
             assert_eq!(config.join_namespace, config.namespace);
             assert_eq!(config.join_secret, Some(format!("flame-{number}-join")));
+            assert_eq!(
+                config.client_config_secret,
+                Some(format!("flame-{number}-client"))
+            );
             assert!(config.join_token_file.is_none());
         }
     }

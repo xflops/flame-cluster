@@ -102,8 +102,10 @@ test.describe('live Flame deployment', () => {
     await expect(applicationRow.locator('.badge')).toHaveText('Enabled');
 
     const nodes = await navigate(page, 'nodes');
-    const registered = nodes.items.find(node => node.metadata?.name === worker || node.spec?.hostname === worker);
-    expect(registered, 'worker fixture is registered with FLM').toBeTruthy();
+    const registered = nodes.items.find(node => node.metadata?.name === worker || node.status?.hostname === worker);
+    expect(registered, 'worker fixture is enrolled in this Flame namespace').toBeTruthy();
+    expect(registered.readiness).toBe('Ready');
+    expect(registered.metadata.namespace).toBe(configured.items[0].namespace);
     const nodeRow = page.locator('#content tbody tr').filter({ hasText: worker });
     await expect(nodeRow).toBeVisible();
     await expect(nodeRow.locator('.readiness')).toHaveText('Ready');
@@ -129,7 +131,7 @@ test.describe('live Flame deployment', () => {
     }
 
     const executors = await navigate(page, 'executors');
-    const identities = new Set([worker, registered.metadata?.name, registered.metadata?.id].filter(Boolean));
+    const identities = new Set([worker, registered.metadata?.name, registered.status?.hostname].filter(Boolean));
     const executor = executors.items.find(executor =>
       identities.has(executor.spec?.node)
       && executor.spec?.application === application

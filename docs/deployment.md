@@ -23,8 +23,7 @@ and secure CRI/CNI when using the default CRI shim.
 Use a kubeconfig whose server address is reachable from clients and workers:
 
 ```sh
-curl -fsSLo setup.sh https://xflops.io/cluster/setup.sh
-sh setup.sh
+curl -fsSL https://xflops.io/cluster/setup.sh | sh
 ```
 
 `--values FILE` is optional. `--kubeconfig FILE` selects a different kubeconfig;
@@ -108,10 +107,12 @@ certificate lifetime is one year (`8760h`), renewing 30 days (`720h`) before
 expiry. The issuer must allow that lifetime. Mounted bundles follow renewal;
 exported copies need a separate refresh before expiry.
 
-The management API gets only `get` on each configured namespace's exact
-`<flame-name>-join` Secret. It cannot list Secrets, modify them, or read client
-private-key Secrets. Its ordered connection catalog is explicit configuration,
-not namespace or workload discovery. The central management UI/API is trusted
+The management API gets `get`/`list` on FlameWorkers in each configured
+namespace, and `get` on that namespace's exact
+`<flame-name>-join` and `<flame-name>-client` Secrets. The first supplies join
+commands; the second supplies the selected `flame.yaml` download. It cannot list
+or modify Secrets, or read unrelated TLS server credentials. Its ordered
+connection catalog is explicit configuration, not namespace or workload discovery. The central management UI/API is trusted
 administrative access across the configured Flames; it does not authenticate
 end users or implement tenant authorization.
 
@@ -119,17 +120,39 @@ end users or implement tenant authorization.
 
 Open `http://<kubeconfig-server-ip>/`. The selector shows namespaces only, such
 as `flame-ns-1` and `flame-ns-2`. `/` opens the first configured Flame directly.
-Selecting another namespace switches resources, session actions, and join
-credentials together. There is no aggregate page or All clusters option.
+Selecting another namespace switches resources, session actions, join
+credentials, and client downloads together.
+
+Nodes reads FlameWorker resources in the selected namespace, filtered by the
+selected Flame's `spec.clusterRef`. It shows the worker's identity, declared
+address, and reported status even before FLM registration. Readiness is Pending,
+Ready, Not ready, Disabled, or Deleting; no FLM node fallback or invented machine
+capacity is used. Applications, sessions, executors, and tasks still read the
+selected FLM. Worker-list failures are reported as errors, not healthy empty
+inventories. There is no aggregate page or All clusters option.
 
 Compact density is the default. Navigation is Nodes → Executors → Applications
 → Sessions → Settings. Settings shows the selected connection and its current
-join command and expiration. Copy that command to the selected namespace's
-prepared worker host with `setup.sh` available; no kubectl token lookup is needed.
+join command and expiration, plus **Download flame.yaml** for the selected
+namespace. The join command fetches the hosted installer and runs it directly:
+
+```sh
+curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '<token>'
+```
+
+Copy the actual command from Settings onto the prepared worker host; no local
+installer or kubectl token lookup is needed. The download reads only that
+connection's configured `<flame-name>-client` Secret in its namespace and returns
+the `flame.yaml` entry as an attachment with `Cache-Control: no-store`. It
+contains client credentials; store it privately and replace exported copies
+when renewed. An unavailable bundle produces an error, without exposing other
+Secret entries. The management API does not discover or accept arbitrary Secret
+names from the download request.
 
 The UI proxies to `cluster.<management-namespace>.svc:3000`. The backend talks
-to each FLM through its in-cluster session-manager Service, not through Tailscale
-or a NodePort. Tailscale may carry browser and administrative access to k3s.
+to each FLM through its in-cluster session-manager Service for workload
+resources; Nodes uses the namespace-scoped Kubernetes FlameWorker API. Neither
+path requires Tailscale or a NodePort for in-cluster reads. Tailscale may carry browser and administrative access to k3s.
 
 Setup configures the UI Service's `service.externalIPs` and
 `cluster.security.allowedHosts` from the kubeconfig endpoint together. For manual

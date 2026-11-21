@@ -6,10 +6,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let configs = load_connections()?;
-    let kube_client = if configs
-        .iter()
-        .any(|(_, config)| config.join_secret.is_some())
-    {
+    let kube_client = if configs.iter().any(|(_, config)| {
+        config.namespace.is_some()
+            || config.join_secret.is_some()
+            || config.client_config_secret.is_some()
+    }) {
         Some(kube::Client::try_default().await?)
     } else {
         None

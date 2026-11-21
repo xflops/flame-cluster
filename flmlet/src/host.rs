@@ -15,7 +15,7 @@ fn invalid_github_mirror() -> Error {
     Error::Invalid("FLAME_GITHUB_MIRROR must be an absolute HTTPS URL prefix without credentials, query, or fragment".into())
 }
 
-/// Only the archive may use an explicitly selected accelerator; its checksum stays official.
+/// An explicitly selected accelerator serves both the archive and its checksum.
 fn runtime_download_urls(official: &str, mirror: Option<&str>) -> Result<(String, String)> {
     let archive = if let Some(prefix) = mirror {
         let uri: http::Uri = prefix.parse().map_err(|_| invalid_github_mirror())?;
@@ -34,7 +34,8 @@ fn runtime_download_urls(official: &str, mirror: Option<&str>) -> Result<(String
     } else {
         official.to_owned()
     };
-    Ok((archive, format!("{official}.sha256")))
+    let checksum = format!("{archive}.sha256");
+    Ok((archive, checksum))
 }
 
 fn installer_arguments(
@@ -326,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn mirror_prefix_changes_archive_only_and_normalizes_trailing_slashes() {
+    fn mirror_prefix_changes_archive_and_checksum_and_normalizes_trailing_slashes() {
         for (prefix, normalized) in [
             ("https://gh-proxy.com", "https://gh-proxy.com/"),
             ("https://gh-proxy.com/", "https://gh-proxy.com/"),
@@ -340,8 +341,8 @@ mod tests {
             let (archive, checksum) =
                 runtime_download_urls(OFFICIAL_ARCHIVE, Some(prefix)).unwrap();
             assert_eq!(archive, format!("{normalized}{OFFICIAL_ARCHIVE}"));
-            assert_eq!(checksum, format!("{OFFICIAL_ARCHIVE}.sha256"));
-            assert!(!checksum.starts_with(normalized));
+            assert_eq!(checksum, format!("{normalized}{OFFICIAL_ARCHIVE}.sha256"));
+            assert_eq!(checksum, format!("{archive}.sha256"));
         }
     }
 

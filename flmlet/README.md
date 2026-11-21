@@ -35,8 +35,8 @@ trusted administrators and isolate these hosts from untrusted workloads; this
 release does not provide a tenant security boundary for Host-shim execution.
 
 For slow GitHub release downloads, explicitly select an HTTPS accelerator for
-the runtime archive only. The default remains the official GitHub URL. For
-example, replace `<token>` with the current token from Settings:
+the runtime archive and its checksum. The default remains the official GitHub
+URLs. For example, replace `<token>` with the current token from Settings:
 
 ```sh
 curl -fsSL https://xflops.io/cluster/setup.sh | sudo env FLAME_GITHUB_MIRROR=https://gh-proxy.com/ sh -s -- --join '<token>'
@@ -45,14 +45,14 @@ curl -fsSL https://xflops.io/cluster/setup.sh | sudo env FLAME_GITHUB_MIRROR=htt
 `sudo env` passes the setting to the root installer and its flmlet child;
 assigning it only to `curl` or before `sudo` may not propagate it. A prefix such
 as `https://gh-proxy.com/` or `https://ghproxy.net/` is prepended to the complete
-official runtime archive URL. Prefixes must use HTTPS and have no credentials,
-query, or fragment; path prefixes are supported and a trailing slash is
+official runtime archive and checksum URLs. Prefixes must use HTTPS and have no
+credentials, query, or fragment; path prefixes are supported and a trailing slash is
 normalized. This is a per-process opt-in, not a global proxy configuration.
 
-The release checksum is fetched independently over HTTPS from the official
-GitHub URL, never from the accelerator. Flmlet verifies the downloaded archive
-against it before extracting or executing the bundled upstream installer. A
-mirror cannot supply its own trusted checksum. The cluster join script still
+Flmlet downloads the release checksum first, then verifies the downloaded archive
+against it before extracting or executing the bundled upstream installer.
+When a mirror is selected, both downloads use that mirror, which must be trusted
+to supply the archive and checksum. The cluster join script still
 comes from `https://xflops.io/cluster/setup.sh`; this option changes neither that
 source nor SDK/Python download settings.
 

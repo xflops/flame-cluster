@@ -122,6 +122,13 @@ async fn api_error(cli: &Cli, error: kube::Error) -> Error {
     }
     error.into()
 }
+// JSON Merge Patch must explicitly clear unavailable capacity, including individual members.
+fn status_merge_patch(status: &flame_api::FlameWorkerStatus) -> serde_json::Value {
+    let mut patch = json!({"status": status});
+    patch["status"]["capacity"] = json!(status.capacity);
+    patch
+}
+
 async fn patch_status(
     cli: &Cli,
     workers: &Api<FlameWorker>,
@@ -132,7 +139,7 @@ async fn patch_status(
         .patch_status(
             &worker.name_any(),
             &PatchParams::default(),
-            &Patch::Merge(json!({"status":status})),
+            &Patch::Merge(status_merge_patch(&status)),
         )
         .await
     {
@@ -253,4 +260,29 @@ async fn main() -> Result<(), Error> {
         tokio::select! {_=tokio::time::sleep(Duration::from_secs(10))=>{},_=tokio::signal::ctrl_c()=>break}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_merge_patch_clears_unknown_members_without_losing_other_status() {
+        let mut status = flame_api::FlameWorkerStatus {
+            config_hash: "retained".into(),
+            ..Default::default()
+        };
+        let absent = status_merge_patch(&status);
+        assert!(absent["status"].get("capacity").unwrap().is_null());
+        assert_eq!(absent["status"]["configHash"], "retained");
+        status.capacity = Some(flame_api::NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: None,
+        });
+        assert_eq!(
+            status_merge_patch(&status)["status"]["capacity"],
+            json!({"cpu":8,"gpu":0,"memory":null})
+        );
+    }
 }

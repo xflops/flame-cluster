@@ -23,5 +23,5 @@ export const stateOf = (row, kind) => kind === 'nodes' ? row.readiness || 'Pendi
 export const shim = value => ({ 0: 'Host', 1: 'Wasm', 3: 'CRI' }[value] || 'Unknown');
 export function parseRoute(hash) {
   const view = hash.replace(/^#\/?/, '');
-  return Object.hasOwn(views, view) ? view : 'applications';
+  return Object.hasOwn(views, view) ? view : 'nodes';
 }

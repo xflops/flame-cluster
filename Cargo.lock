@@ -570,6 +570,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "flame-api",
+ "http",
  "kube",
  "rustls",
  "rustls-pki-types",

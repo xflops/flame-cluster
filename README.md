@@ -3,8 +3,9 @@
 Rust operator, host worker service, management API, and web UI for Flame clusters.
 The Rust implementation replaces the earlier Go operator.
 
-Read the [security boundaries](docs/security.md) before deployment. CRI runtime
-selection is configurable; worker-network isolation remains an SRE responsibility.
+Read the [security boundaries](docs/security.md) before deployment. Workers enable
+both CRI and Host shims by default; Host tasks run as root. Runtime selection is
+configurable, and worker-network isolation remains an SRE responsibility.
 
 | Component | Purpose |
 | --- | --- |
@@ -67,7 +68,7 @@ values; `gateway.ingressIp` is optional advertised-address metadata only.
 The management Service and Deployment are `cluster`; its image is
 `docker.io/xflops/flame-cluster`. The combined `flame-cluster` chart always runs
 that service. Its settings live under `cluster`, and `flames` is an ordered list
-of Flame configurations. The default first resource is `flame-ns-1/flame-1`;
+of Flame configurations. The default first resource is `flame-1/flame-1`;
 further entries receive indexed names and separate namespaces and ports.
 
 Each namespace owns its FlameCluster, FlameWorkers, client credentials, and join

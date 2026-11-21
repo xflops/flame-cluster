@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 flame-api.workspace = true
+http = "1"
 chrono.workspace = true
 kube.workspace = true
 serde.workspace = true

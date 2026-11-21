@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn worker_defaults_are_explicit_and_do_not_install_dependencies() {
         let spec = spec();
-        assert_eq!(spec.shims, ["cri"]);
+        assert_eq!(spec.shims, ["cri", "host"]);
         assert_eq!(spec.cache_port, 9090);
         assert_eq!(spec.max_executors, 10);
         assert_eq!(spec.python_version, "3.12");

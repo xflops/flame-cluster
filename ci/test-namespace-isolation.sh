@@ -8,7 +8,7 @@ base=http://127.0.0.1:18090
 mkdir -p "$runtime/secrets"
 
 curl -fsS "$base/api/connections" > "$runtime/connections.json"
-jq -e '[.items[]|{id,namespace}] == [{id:"flame-1",namespace:"flame-ns-1"},{id:"flame-2",namespace:"flame-ns-2"}]' "$runtime/connections.json" >/dev/null
+jq -e '[.items[]|{id,namespace}] == [{id:"flame-1",namespace:"flame-1"},{id:"flame-2",namespace:"flame-2"}]' "$runtime/connections.json" >/dev/null
 curl -fsS "$base/api/connections/flame-2/nodes?pageSize=100" > "$runtime/second-flame-nodes.json"
 jq -e '.total==0 and (.items|length)==0' "$runtime/second-flame-nodes.json" >/dev/null
 for index in 1 2; do
@@ -24,7 +24,7 @@ for index in (1,2):
     assert command[:9]==['curl','-fsSL','https://xflops.io/cluster/setup.sh','|','sudo','sh','-s','--','--join']
     token=command[command.index('--join')+1]
     envelope=json.loads(base64.b64decode(token,validate=True))
-    assert envelope['namespace']==f'flame-ns-{index}'
+    assert envelope['namespace']==f'flame-{index}'
     assert envelope['cluster']==f'flame-{index}'
 print('Each join command enrolls only into its selected namespace and Flame.')
 PYJOIN
@@ -35,7 +35,7 @@ jq -e 'all(.items[]; .clientConfigAvailable==true)' "$runtime/connections.json" 
 for index in 1 2; do
   curl -fsS -D "$runtime/secrets/client-headers-$index.txt" \
     "$base/api/connections/flame-$index/flame.yaml" > "$runtime/secrets/client-download-$index.yaml"
-  kubectl -n "flame-ns-$index" get secret "flame-$index-client" -o json \
+  kubectl -n "flame-$index" get secret "flame-$index-client" -o json \
     | jq -ej '.data["flame.yaml"]|@base64d' > "$runtime/secrets/client-expected-$index.yaml"
   cmp "$runtime/secrets/client-download-$index.yaml" "$runtime/secrets/client-expected-$index.yaml"
   grep -Eqi '^cache-control:.*no-store' "$runtime/secrets/client-headers-$index.txt"
@@ -62,26 +62,26 @@ def status(path):
     except HTTPError as error:
         return error.code
 prefix='/apis/flame.xflops.io/v1alpha1/namespaces/'
-assert status(prefix+'flame-ns-1/flameworkers/flame-ci-worker')==200
-assert status(prefix+'flame-ns-2/flameworkers/flame-ci-worker')==403
-assert status(prefix+'flame-ns-2/flameclusters/flame-2')==403
-assert status('/api/v1/namespaces/flame-ns-1/secrets/flame-1-client')==403
+assert status(prefix+'flame-1/flameworkers/flame-ci-worker')==200
+assert status(prefix+'flame-2/flameworkers/flame-ci-worker')==403
+assert status(prefix+'flame-2/flameclusters/flame-2')==403
+assert status('/api/v1/namespaces/flame-1/secrets/flame-1-client')==403
 print('Worker identity is restricted to its namespace and cannot read client Secrets.')
 PYWORKER
 
 # Both legitimate clients work, but neither identity authenticates to the other Gateway.
 cleanup_clients() {
-  worker_exec rm -f /tmp/flame-ns-1-client.yaml /tmp/flame-ns-2-client.yaml /tmp/flame-cross-1.yaml /tmp/flame-cross-2.yaml
+  worker_exec rm -f /tmp/flame-1-client.yaml /tmp/flame-2-client.yaml /tmp/flame-cross-1.yaml /tmp/flame-cross-2.yaml
   rm -f "$runtime"/secrets/namespace-client-*.ca "$runtime"/secrets/namespace-client-*.crt "$runtime"/secrets/namespace-client-*.key
 }
 trap cleanup_clients EXIT
 for index in 1 2; do
-  kubectl -n "flame-ns-$index" get secret "flame-$index-client" -o json \
+  kubectl -n "flame-$index" get secret "flame-$index-client" -o json \
     | jq -er '.data["flame.yaml"]|@base64d' \
-    | worker_exec_stdin sh -c 'umask 077; cat > "$1"' copy "/tmp/flame-ns-$index-client.yaml"
-  timeout 30 docker exec "$worker" /usr/local/flame/bin/flmctl --config "/tmp/flame-ns-$index-client.yaml" list -a >/dev/null
+    | worker_exec_stdin sh -c 'umask 077; cat > "$1"' copy "/tmp/flame-$index-client.yaml"
+  timeout 30 docker exec "$worker" /usr/local/flame/bin/flmctl --config "/tmp/flame-$index-client.yaml" list -a >/dev/null
 done
-worker_exec sh -ec 'sed -e s/:30443/:30453/g -e s/:31443/:31453/g /tmp/flame-ns-1-client.yaml > /tmp/flame-cross-1.yaml; sed -e s/:30453/:30443/g -e s/:31453/:31443/g /tmp/flame-ns-2-client.yaml > /tmp/flame-cross-2.yaml; chmod 600 /tmp/flame-cross-1.yaml /tmp/flame-cross-2.yaml'
+worker_exec sh -ec 'sed -e s/:30443/:30453/g -e s/:31443/:31453/g /tmp/flame-1-client.yaml > /tmp/flame-cross-1.yaml; sed -e s/:30453/:30443/g -e s/:31453/:31443/g /tmp/flame-2-client.yaml > /tmp/flame-cross-2.yaml; chmod 600 /tmp/flame-cross-1.yaml /tmp/flame-cross-2.yaml'
 for index in 1 2; do
   rejected=0
   timeout 30 docker exec "$worker" /usr/local/flame/bin/flmctl --config "/tmp/flame-cross-$index.yaml" list -a > "$runtime/cross-namespace-$index.log" 2>&1 || rejected=$?
@@ -93,7 +93,7 @@ node_ip="$(kubectl get nodes -o json | jq -r '[.items[0].status.addresses[]|sele
 for index in 1 2; do
   for pair in 'ca.crt:ca' 'tls.crt:crt' 'tls.key:key'; do
     key="${pair%:*}"; extension="${pair#*:}"
-    kubectl -n "flame-ns-$index" get secret "flame-$index-client" -o json \
+    kubectl -n "flame-$index" get secret "flame-$index-client" -o json \
       | jq -er --arg key "$key" '.data[$key]|@base64d' > "$runtime/secrets/namespace-client-$index.$extension"
   done
   target=30453

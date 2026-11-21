@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A real Linux systemd host on the disposable Kind network.
 worker=flame-ci-worker
-flame_namespace=flame-ns-1
+flame_namespace=flame-1
 flame_name=flame-1
 kube=(kubectl -n "$flame_namespace")
 management_kube=(kubectl -n flame-system)

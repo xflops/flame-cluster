@@ -25,11 +25,12 @@ worker trust fails closed. The optional worker object cache remains a private
 
 ## Workload runtimes
 
-New workers default to the CRI shim. The SRE supplies and secures the CRI runtime
-and its network configuration; setup does not install the CRI runtime. Flmlet installs FEM through the trusted
-upstream Flame installer, including its systemd units, then writes configuration
-and restarts its services. Users select
-shims with `setup.sh --join TOKEN --shims cri`, `--shims host`, or
+New workers enable both CRI and Host shims by default (`cri,host`), including
+Host execution as root. The SRE supplies and secures the CRI runtime and its
+network configuration; setup does not install the CRI runtime. Flmlet installs
+FEM through the trusted upstream Flame installer, including its systemd units,
+then writes configuration and restarts its services. Users select shims with
+`setup.sh --join TOKEN --shims cri`, `--shims host`, or
 `--shims cri,host`, or configure `FlameWorker.spec.shims` directly.
 
 flmlet manages host services as root. Host-shim tasks inherit the FEM service

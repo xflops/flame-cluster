@@ -42,12 +42,12 @@ cluster:
       keyKey: ""
       domain: ""
 
-# Each resource is <name>-<index+1> in its own <name>-ns-<index+1> namespace.
+# Each resource is <name>-<index+1> in its own <name>-<index+1> namespace.
 # Namespaces are retained on uninstall; clients and workers stay in their Flame namespace.
 # Additional partial entries inherit the same resource defaults.
 flames:
   - name: flame
-    namespace: "" # Empty selects flame-ns-1 for the first entry.
+    namespace: "" # Empty selects flame-1 for the first entry.
     version: latest
     endpoint: ""
     # Installer-derived kubeconfig IPv4; combined with nodePort unless endpoint is set.

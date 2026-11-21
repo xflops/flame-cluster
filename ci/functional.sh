@@ -257,15 +257,15 @@ bash ci/test-flmlet.sh "$runtime"
 
 # Management reads namespaced worker inventory and exact credential Secrets, without writes or namespace discovery.
 "${management_kube[@]}" get deployment cluster -o json | jq -e '.spec.template.spec.serviceAccountName=="cluster" and .spec.template.spec.automountServiceAccountToken==true' >/dev/null
-[[ "$(kubectl auth can-i get secret/flame-1-join --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
-[[ "$(kubectl auth can-i get secret/flame-2-join --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
-[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
-[[ "$(kubectl auth can-i get secret/flame-2-client --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
-[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
-[[ "$(kubectl auth can-i get secret/flame-1-control-plane-tls --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
-[[ "$(kubectl auth can-i patch secret/flame-1-client --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
-[[ "$(kubectl auth can-i list secrets --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
-for namespace in flame-ns-1 flame-ns-2; do
+[[ "$(kubectl auth can-i get secret/flame-1-join --namespace flame-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-2-join --namespace flame-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-2-client --namespace flame-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
+[[ "$(kubectl auth can-i get secret/flame-1-client --namespace flame-2 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i get secret/flame-1-control-plane-tls --namespace flame-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i patch secret/flame-1-client --namespace flame-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i list secrets --namespace flame-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+for namespace in flame-1 flame-2; do
   [[ "$(kubectl auth can-i list flameworkers.flame.xflops.io --namespace "$namespace" --as system:serviceaccount:flame-system:cluster)" == yes ]]
   [[ "$(kubectl auth can-i get flameworkers.flame.xflops.io --namespace "$namespace" --as system:serviceaccount:flame-system:cluster)" == yes ]]
   [[ "$(kubectl auth can-i patch flameworkers.flame.xflops.io --namespace "$namespace" --as system:serviceaccount:flame-system:cluster || true)" == no ]]

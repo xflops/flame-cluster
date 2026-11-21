@@ -6,7 +6,7 @@ metadata:
 spec:
   clusterRef: flame
   address: 192.168.10.21
-  shims: [host]
+  shims: [cri, host]
   maxExecutors: 10
   pythonVersion: "3.12"
   manageObjectCache: true

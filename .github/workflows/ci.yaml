@@ -124,11 +124,11 @@ jobs:
         run: |
           kubectl get pods -A -o wide || true
           kubectl get events -A --sort-by=.lastTimestamp || true
-          kubectl -n flame-ns-1 describe flamecluster flame-1 || true
+          kubectl -n flame-1 describe flamecluster flame-1 || true
           kubectl -n flame-system logs deployment/flame-operator --tail=150 || true
           kubectl -n flame-system logs deployment/cluster --tail=100 || true
-          kubectl -n flame-ns-1 logs deployment/flame-1-session-manager --tail=100 || true
-          kubectl -n flame-ns-1 get flameworker flame-ci-worker -o yaml || true
+          kubectl -n flame-1 logs deployment/flame-1-session-manager --tail=100 || true
+          kubectl -n flame-1 get flameworker flame-ci-worker -o yaml || true
           docker exec flame-ci-worker journalctl -u flmlet -u flame-executor-manager -u flame-object-cache --no-pager -n 150 || true
           cat "$RUNNER_TEMP/flame-ci/flmping.log" "$RUNNER_TEMP/flame-ci/executor-probe.log" 2>/dev/null || true
           kubectl -n envoy-gateway-system logs deployment/envoy-gateway --tail=100 || true

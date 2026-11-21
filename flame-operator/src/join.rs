@@ -252,6 +252,7 @@ mod tests {
             "pending",
             "disabled-enrollment",
             "pending-host",
+            "pending-cri",
             "invalid-shim",
             "rejoin-host",
         ] {
@@ -284,8 +285,10 @@ mod tests {
                                 value["spec"]["shims"],
                                 json!(if case == "pending-host" {
                                     vec!["host"]
-                                } else {
+                                } else if case == "pending-cri" {
                                     vec!["cri"]
+                                } else {
+                                    vec!["cri", "host"]
                                 })
                             );
                             value["metadata"]["uid"] = json!("new-worker");
@@ -346,6 +349,7 @@ mod tests {
                 manage_object_cache: Some(true),
                 shims: match case {
                     "pending-host" => Some(vec!["host".into()]),
+                    "pending-cri" => Some(vec!["cri".into()]),
                     "invalid-shim" => Some(vec!["unknown".into()]),
                     "rejoin-host" => Some(vec!["cri".into()]),
                     _ => None,
@@ -359,7 +363,8 @@ mod tests {
                 response.status(),
                 match case {
                     "foreign" => StatusCode::CONFLICT,
-                    "pending" | "pending-host" | "rejoin-host" => StatusCode::ACCEPTED,
+                    "pending" | "pending-host" | "pending-cri" | "rejoin-host" =>
+                        StatusCode::ACCEPTED,
                     "invalid-shim" => StatusCode::BAD_REQUEST,
                     _ => StatusCode::FORBIDDEN,
                 },
@@ -367,7 +372,7 @@ mod tests {
             );
             assert_eq!(
                 creates.load(Ordering::SeqCst),
-                usize::from(matches!(case, "pending" | "pending-host"))
+                usize::from(matches!(case, "pending" | "pending-host" | "pending-cri"))
             );
         }
     }

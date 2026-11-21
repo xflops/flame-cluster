@@ -15,12 +15,12 @@ The chart mounts an ordered JSON catalog and sets `FLAME_CONNECTIONS_FILE`:
 [
   {
     "id": "flame-1",
-    "namespace": "flame-ns-1",
+    "namespace": "flame-1",
     "name": "flame-1",
-    "displayName": "flame-ns-1/flame-1",
-    "endpoint": "https://flame-1-session-manager.flame-ns-1.svc:8080",
+    "displayName": "flame-1/flame-1",
+    "endpoint": "https://flame-1-session-manager.flame-1.svc:8080",
     "caFile": "/etc/flame/connections/flame-1/ca.crt",
-    "joinNamespace": "flame-ns-1",
+    "joinNamespace": "flame-1",
     "joinSecret": "flame-1-join",
     "clientConfigSecret": "flame-1-client"
   }

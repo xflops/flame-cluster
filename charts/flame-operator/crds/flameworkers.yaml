@@ -62,6 +62,7 @@ spec:
               shims:
                 default:
                 - cri
+                - host
                 items:
                   type: string
                 type: array

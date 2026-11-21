@@ -2,7 +2,7 @@
 
 The root URL `/` opens the first configured Flame's Applications view
 (`#/applications`). The selector lists configured namespaces only, such as
-`flame-ns-1` and `flame-ns-2`; there is no All clusters option or aggregate page.
+`flame-1` and `flame-2`; there is no All clusters option or aggregate page.
 Switching namespaces preserves the resource view while clearing pages, filters,
 drawers, pending requests, and credentials from the previous Flame.
 

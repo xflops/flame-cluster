@@ -154,6 +154,7 @@ function render() {
   renderNavigation();
   const view = views[state.view];
   const selected = state.connections?.find(connection => connection.id === state.connectionId);
+  const label = selected?.namespace || state.connection?.namespace || selected?.displayName || state.connection?.displayName || 'Flame';
   $('#connection-name').innerHTML = state.connections?.length
     ? state.connections.map(connection => `<option value="${e(connection.id)}">${e(connection.namespace || connection.displayName || connection.id)}</option>`).join('')
     : '<option>Loading Flames…</option>';
@@ -168,7 +169,6 @@ function render() {
   $('#row-count').hidden = settings;
   $('.filters').hidden = settings;
   $('.table-footer').hidden = settings;
-  $('#eyebrow').textContent = (state.connection?.displayName || selected?.displayName || 'Flame').toUpperCase();
   const filter = $('#status-filter');
   filter.innerHTML = '<option value="">All states</option>' + view.states.map(s => `<option>${e(s)}</option>`).join('');
   filter.value = state.filter;
@@ -190,7 +190,7 @@ function render() {
   if (settings) {
     $('#content').innerHTML = state.connection
       ? table(['Setting', 'Value'], [
-        `<tr><td>Cluster</td><td>${e(state.connection.displayName)}</td></tr>`,
+        `<tr><td>${selected?.namespace || state.connection.namespace ? 'Namespace' : 'Cluster'}</td><td>${e(label)}</td></tr>`,
         `<tr><td>FLM endpoint</td><td>${e(state.connection.endpoint)}</td></tr>`,
       ])
       : empty(errors.length ? 'Unable to load settings' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Connection settings will appear here shortly.');
@@ -232,7 +232,7 @@ function render() {
     $('#content').innerHTML = table(['Session', 'State', 'Application', 'Task progress', 'Created', 'Actions'], displayed.map((row, i) => `<tr><td>${resourceLink(row, i)}</td><td>${badge(stateOf(row, 'sessions'))}</td><td>${e(row.spec?.application)}</td><td>${sessionProgress(row.status)}</td><td>${date(row.status?.creation_time)}</td><td>${sessionActions(row, i)}</td></tr>`));
   } else if (state.view === 'nodes') {
     $('#content').innerHTML = table(['Node', 'Status', 'Address', 'FEM', 'Cache', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
-      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : row.spec?.clusterRef)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${e(row.spec?.address)}</td><td>${e(row.status?.fem?.activeState)}</td><td>${e(cacheState(row))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
+      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : undefined)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${e(row.spec?.address)}</td><td>${e(row.status?.fem?.activeState)}</td><td>${e(cacheState(row))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
     ));
   } else {
     $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));
@@ -295,7 +295,7 @@ function openDetails(row) {
   taskController?.abort();
   state.drawer = row;
   $('#detail-title').textContent = nameOf(row);
-  $('#detail-kind').textContent = `${state.connection?.displayName || 'Flame'} · ${state.view.slice(0, -1)}`.toUpperCase();
+  $('#detail-kind').textContent = state.view.slice(0, -1).toUpperCase();
   const status = state.view === 'nodes' ? readiness(stateOf(row, state.view)) : badge(stateOf(row, state.view));
   let detail = status;
   if (state.view === 'applications') {
@@ -303,7 +303,7 @@ function openDetails(row) {
     detail += '<div class="drawer-section"><h3>Command</h3></div><pre>' + e([row.spec?.command, ...(row.spec?.arguments || [])].filter(Boolean).join(' ')) + '</pre>';
     if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
   } else if (state.view === 'nodes') {
-    detail += properties([['Namespace', row.metadata?.namespace], ['Cluster', row.spec?.clusterRef], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash], ['Observed generation', row.status?.observedGeneration]]);
+    detail += properties([['Namespace', row.metadata?.namespace], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash], ['Observed generation', row.status?.observedGeneration]]);
     detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['FEM', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(report?.activeState)}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
     if (row.status?.conditions?.length) detail += '<div class="drawer-section"><h3>Conditions</h3></div>' + table(['Condition', 'Status', 'Reason', 'Message'], row.status.conditions.map(condition => `<tr><td>${e(condition.type)}</td><td>${e(condition.status)}</td><td>${e(condition.reason)}</td><td>${e(condition.message)}</td></tr>`));
     if (!row.status || !Object.keys(row.status).length) detail += '<p class="detail-note">Worker status has not been reported yet.</p>';

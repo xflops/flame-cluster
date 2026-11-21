@@ -11,6 +11,32 @@ use std::{
 #[derive(Default)]
 pub struct LocalHost;
 
+fn invalid_github_mirror() -> Error {
+    Error::Invalid("FLAME_GITHUB_MIRROR must be an absolute HTTPS URL prefix without credentials, query, or fragment".into())
+}
+
+/// Only the archive may use an explicitly selected accelerator; its checksum stays official.
+fn runtime_download_urls(official: &str, mirror: Option<&str>) -> Result<(String, String)> {
+    let archive = if let Some(prefix) = mirror {
+        let uri: http::Uri = prefix.parse().map_err(|_| invalid_github_mirror())?;
+        let authority = uri.authority().ok_or_else(invalid_github_mirror)?;
+        if uri.scheme_str() != Some("https")
+            || authority.host().is_empty()
+            || authority.as_str().contains(['@', '%', '\\'])
+            || (authority.as_str() != authority.host() && authority.port_u16().is_none())
+            || authority.port_u16() == Some(0)
+            || uri.query().is_some()
+            || prefix.contains(['#', '\\'])
+        {
+            return Err(invalid_github_mirror());
+        }
+        format!("{}/{official}", prefix.trim_end_matches('/'))
+    } else {
+        official.to_owned()
+    };
+    Ok((archive, format!("{official}.sha256")))
+}
+
 fn installer_arguments(
     installer: &Path,
     settings: &crate::Settings,
@@ -111,9 +137,16 @@ impl Host for LocalHost {
         python: &str,
         force: bool,
     ) -> Result<()> {
+        let mirror = match std::env::var("FLAME_GITHUB_MIRROR") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => return Err(invalid_github_mirror()),
+        };
         let temporary = tempfile::tempdir()?;
         let installer = temporary.path().join("setup.sh");
         let fetch = |host: &mut Self, url: &str, path: &Path| -> Result<bool> {
+            // Runtime archives exceed 60 MB; slow links need more than three minutes.
+            // The process deadline bounds all attempts, including an in-flight retry.
             let args = [
                 "--fail",
                 "--silent",
@@ -124,7 +157,9 @@ impl Host for LocalHost {
                 "--connect-timeout",
                 "15",
                 "--max-time",
-                "180",
+                "900",
+                "--retry-max-time",
+                "900",
                 "--output",
                 path.to_str()
                     .ok_or_else(|| Error::Invalid("invalid temporary path".into()))?,
@@ -132,7 +167,7 @@ impl Host for LocalHost {
             ]
             .map(String::from);
             Ok(host
-                .run(Path::new("curl"), &args, Duration::from_secs(195))?
+                .run(Path::new("curl"), &args, Duration::from_secs(930))?
                 .success)
         };
         let mut args = installer_arguments(&installer, settings, version, python, force);
@@ -153,9 +188,10 @@ impl Host for LocalHost {
             let url = format!(
                 "https://github.com/xflops/flame/releases/download/{version}/{name}.tar.gz"
             );
+            let (archive_url, checksum_url) = runtime_download_urls(&url, mirror.as_deref())?;
             let archive = temporary.path().join(format!("{name}.tar.gz"));
             let checksum = temporary.path().join(format!("{name}.tar.gz.sha256"));
-            if !fetch(self, &url, &archive)? || !fetch(self, &format!("{url}.sha256"), &checksum)? {
+            if !fetch(self, &checksum_url, &checksum)? || !fetch(self, &archive_url, &archive)? {
                 return Err(Error::Command(
                     "could not download the official Flame installer/runtime".into(),
                 ));
@@ -279,6 +315,60 @@ impl LocalHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const OFFICIAL_ARCHIVE: &str =
+        "https://github.com/xflops/flame/releases/download/latest/flame-latest-linux-amd64.tar.gz";
+
+    #[test]
+    fn official_runtime_downloads_remain_the_default() {
+        let (archive, checksum) = runtime_download_urls(OFFICIAL_ARCHIVE, None).unwrap();
+        assert_eq!(archive, OFFICIAL_ARCHIVE);
+        assert_eq!(checksum, format!("{OFFICIAL_ARCHIVE}.sha256"));
+    }
+
+    #[test]
+    fn mirror_prefix_changes_archive_only_and_normalizes_trailing_slashes() {
+        for (prefix, normalized) in [
+            ("https://gh-proxy.com", "https://gh-proxy.com/"),
+            ("https://gh-proxy.com/", "https://gh-proxy.com/"),
+            ("https://ghproxy.net///", "https://ghproxy.net/"),
+            (
+                "https://mirror.example:8443/github/",
+                "https://mirror.example:8443/github/",
+            ),
+            ("https://[::1]:8443/path/", "https://[::1]:8443/path/"),
+        ] {
+            let (archive, checksum) =
+                runtime_download_urls(OFFICIAL_ARCHIVE, Some(prefix)).unwrap();
+            assert_eq!(archive, format!("{normalized}{OFFICIAL_ARCHIVE}"));
+            assert_eq!(checksum, format!("{OFFICIAL_ARCHIVE}.sha256"));
+            assert!(!checksum.starts_with(normalized));
+        }
+    }
+
+    #[test]
+    fn invalid_mirror_configuration_is_rejected_without_exposing_it() {
+        for prefix in [
+            "",
+            "mirror.example",
+            "//mirror.example/",
+            "http://mirror.example/",
+            "https:///",
+            "https://:443/",
+            "https://user:private-password@mirror.example/",
+            "https://mirror.example/?token=private-password",
+            "https://mirror.example/#fragment",
+            "https://mirror.example:invalid/",
+            "https://mirror.example:0/",
+            "https://mirror.example:65536/",
+            "https://mirror.example/\nheader",
+            "https://mirror.example/\\path",
+        ] {
+            let error = runtime_download_urls(OFFICIAL_ARCHIVE, Some(prefix)).unwrap_err();
+            assert_eq!(error.to_string(), invalid_github_mirror().to_string());
+            assert!(!error.to_string().contains("private-password"));
+        }
+    }
+
     #[test]
     fn upstream_installer_enables_systemd_in_the_selected_directory() {
         let settings = crate::Settings {

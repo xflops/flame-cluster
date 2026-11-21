@@ -120,7 +120,7 @@ test('nodes show FlameWorker enrollment, service status, and details',async({pag
   await expect(page.locator('#content tbody').getByText('Ready',{exact:true})).toBeVisible();
   await page.getByRole('button',{name:/flm-worker-01/}).click();
   await expect(page.getByRole('dialog')).toContainText('training-ns');
-  await expect(page.getByRole('dialog')).toContainText('training-1');
+  await expect(page.getByRole('dialog')).not.toContainText('training-1');
   await expect(page.getByRole('dialog')).toContainText('ready-worker-hash');
   await expect(page.getByRole('dialog')).toContainText('Worker registered and services active');
   await expect(page.getByRole('dialog')).toContainText('192.168.3.8');
@@ -249,7 +249,7 @@ test('late connection and resource responses cannot overwrite the selected Flame
   await expect(page.getByRole('button',{name:/production-service/})).toBeVisible();
   const late=page.waitForResponse(response=>new URL(response.url()).pathname===scoped('applications'));
   pending.resolve();await (await late).finished();
-  await expect(page.locator('#eyebrow')).toHaveText('PRODUCTION-NS/PRODUCTION');
+  await expect(page.locator('#eyebrow')).toHaveCount(0);
   await expect(page.getByRole('button',{name:/production-service/})).toBeVisible();
   await expect(page.getByRole('button',{name:/flmping/})).toHaveCount(0);
   await expect(selector).toHaveValue('production');
@@ -442,7 +442,7 @@ test('switching namespaces shows each FlameWorker address, runtime, and executor
   await expect(page.locator('#content tbody td').nth(6)).toHaveText('24');
   await page.getByRole('button',{name:/prod-worker/}).click();
   await expect(page.getByRole('dialog')).toContainText('production-ns');
-  await expect(page.getByRole('dialog')).toContainText('production-1');
+  await expect(page.getByRole('dialog')).not.toContainText('production-1');
   await expect(page.getByRole('dialog')).not.toContainText('training-ns');
 });
 test('empty Nodes explains enrollment without requiring an FLM registration',async({page})=>{
@@ -450,4 +450,18 @@ test('empty Nodes explains enrollment without requiring an FLM registration',asy
   await expect(page.getByRole('heading',{name:'No nodes yet'})).toBeVisible();
   await expect(page.locator('#content')).toContainText('Nodes appear here when they enroll.');
   await expect(page.locator('#content')).toContainText('Open Settings for the node join command.');
+});
+
+test('namespace identifies the cluster throughout the console without its config name',async({page})=>{
+  await fixture(page,multiple);await page.goto('/#/nodes');
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+  await expect(page.locator('#eyebrow')).toHaveCount(0);
+  await expect(page.locator('#content')).not.toContainText('production-1');
+  await page.getByRole('button',{name:/prod-worker/}).click();
+  await expect(page.locator('#detail-kind')).toHaveText('NODE');
+  await expect(page.getByRole('dialog')).not.toContainText('production-1');
+  await page.getByRole('button',{name:'Close details'}).click();
+  await page.getByRole('link',{name:'Settings',exact:true}).click();
+  await expect(page.locator('#content tbody tr').first()).toHaveText('Namespaceproduction-ns');
+  await expect(page.locator('#content')).not.toContainText('production-ns/production');
 });

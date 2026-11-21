@@ -452,7 +452,7 @@ test('empty Nodes explains enrollment without requiring an FLM registration',asy
   await expect(page.locator('#content')).toContainText('Open Settings for the node join command.');
 });
 
-test('namespace identifies the cluster throughout the console without its config name',async({page})=>{
+test('cluster labels hide Kubernetes terminology and the internal config name',async({page})=>{
   await fixture(page,multiple);await page.goto('/#/nodes');
   await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
   await expect(page.locator('#eyebrow')).toHaveCount(0);
@@ -460,8 +460,11 @@ test('namespace identifies the cluster throughout the console without its config
   await page.getByRole('button',{name:/prod-worker/}).click();
   await expect(page.locator('#detail-kind')).toHaveText('NODE');
   await expect(page.getByRole('dialog')).not.toContainText('production-1');
+  await expect(page.getByRole('dialog').locator('dt').first()).toHaveText('Cluster');
+  await expect(page.getByRole('dialog')).not.toContainText(/namespace|Kubernetes|observed generation/i);
   await page.getByRole('button',{name:'Close details'}).click();
   await page.getByRole('link',{name:'Settings',exact:true}).click();
-  await expect(page.locator('#content tbody tr').first()).toHaveText('Namespaceproduction-ns');
+  await expect(page.locator('#content tbody tr').first()).toHaveText('Clusterproduction-ns');
   await expect(page.locator('#content')).not.toContainText('production-ns/production');
+  await expect(page.locator('#content')).not.toContainText(/namespace|Kubernetes/i);
 });

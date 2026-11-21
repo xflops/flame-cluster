@@ -1,23 +1,23 @@
 # Flame UI
 
 The root URL `/` opens the first configured Flame's Applications view
-(`#/applications`). The selector lists configured namespaces only, such as
+(`#/applications`). The selector lists configured clusters only, such as
 `flame-1` and `flame-2`; there is no All clusters option or aggregate page.
-Switching namespaces preserves the resource view while clearing pages, filters,
+Switching clusters preserves the resource view while clearing pages, filters,
 drawers, pending requests, and credentials from the previous Flame.
 
 Navigation is Nodes, Executors, Applications, Sessions, Settings. Nodes lists
-enrolled FlameWorkers in the selected namespace, including Pending workers that
+enrolled nodes in the selected cluster, including Pending workers that
 have not registered with FLM yet. It shows worker readiness, address, reported
 FEM/cache service states, runtimes, executor limit, and heartbeat. Unreported
 values remain unavailable; no hardware capacity is inferred.
 
 Settings shows the selected connection, a Download flame.yaml button when a
 client bundle is configured, and the current join command/expiration. Downloads
-contain the selected namespace's client configuration and are never rendered in
+contain the selected cluster's client configuration and are never rendered in
 the page. The copyable join command downloads the hosted installer, so the worker
 does not need a local setup.sh. Join tokens are loaded only in Settings and are
-never cached across namespace changes. Expired or unavailable tokens do not
+never cached across cluster changes. Expired or unavailable tokens do not
 produce a copyable command.
 
 The browser first reads `/api/connections`, then scopes reads, session actions,
@@ -25,6 +25,10 @@ and task pages to `/api/connections/{id}/...`. The management service reads Node
 from namespaced FlameWorkers filtered to the selected Flame. Applications,
 sessions, tasks, and executors come from that Flame's configured FLM. See
 [backend configuration](../flame-cluster/README.md).
+
+The UI calls the namespace-backed identity **Cluster** and keeps Kubernetes
+namespace and object-generation concepts out of visible labels. Internal
+namespace fields still scope requests and enforce isolation.
 
 Compact density is the default for the header, sidebar, table rows, controls,
 and Settings. A full 12-row resource page fits a 1440×900 viewport.

@@ -9,17 +9,38 @@ import unittest
 CHART = Path(__file__).resolve().parents[1]
 
 
-def render(values, template=None, check=True):
+def render(values, template=None, check=True, overrides=()):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / 'values.json'
         path.write_text(json.dumps(values))
         args = ['helm', 'template', 'test-release', str(CHART), '--namespace', 'team-a', '-f', str(path)]
         if template:
             args += ['--show-only', f'templates/{template}']
+        for override in overrides:
+            args += ['--set', override]
         return subprocess.run(args, text=True, capture_output=True, check=check)
 
 
 class Render(unittest.TestCase):
+    def test_rollout_override_preserves_the_full_stored_flames_list(self):
+        values = {'flames': [
+            {'name': 'training', 'namespace': 'training-ns', 'endpoint': '192.168.3.10:32080', 'nodePort': 32080,
+             'gateway': {'hostname': 'training.example.test', 'sessionPort': 32443, 'cachePort': 32444}},
+            {'name': 'inference', 'namespace': 'inference-ns', 'endpoint': '192.168.3.11:32180', 'nodePort': 32180,
+             'rolloutRevision': 'keep-inference', 'gateway': {'hostname': 'inference.example.test', 'sessionPort': 32543, 'cachePort': 32544}},
+        ]}
+        before = render(values, 'flames.yaml').stdout
+        after = render(values, 'flames.yaml', overrides=['flames[0].rolloutRevision=functional-restart']).stdout
+        self.assertEqual(after, before.replace('rolloutRevision: ""', 'rolloutRevision: functional-restart', 1))
+        self.assertEqual(re.findall(r'^  name: (.+)$', after, re.M), ['training-1', 'inference-2'])
+        self.assertEqual(re.findall(r'^  namespace: (.+)$', after, re.M), ['training-ns', 'inference-ns'])
+        for endpoint in ['192.168.3.10:32080', '192.168.3.11:32180']:
+            self.assertIn(f'endpoint: {endpoint}', after)
+        for port in [32080, 32180, 32443, 32444, 32543, 32544]:
+            self.assertRegex(after, rf'(?:nodePort|sessionPort|cachePort): {port}\b')
+        self.assertEqual(render(values, 'connections.yaml').stdout,
+                         render(values, 'connections.yaml', overrides=['flames[0].rolloutRevision=functional-restart']).stdout)
+
     def test_multiple_flames_have_matching_connections_and_distinct_ports(self):
         values = {'flames': [
             {'name': 'training', 'endpointHost': '192.168.3.10', 'gateway': {'hostname': '192.168.3.10'}},

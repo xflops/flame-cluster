@@ -199,6 +199,16 @@ kubectl apply --server-side -f charts/flame-operator/crds/
 helm upgrade flame-operator charts/flame-operator --namespace flame-system
 ```
 
+When updating a field inside `flames`, pass the complete configured list. Helm
+replaces lists during values merging, so `--reuse-values` with only a partial
+`--set flames[0]...` entry loses the other fields and Flames. For a rollout:
+
+```sh
+helm get values flame-cluster --namespace flame-system -o yaml > flame-values.yaml
+helm upgrade flame-cluster charts/flame-cluster --namespace flame-system \
+  --values flame-values.yaml --set 'flames[0].rolloutRevision=restart-1'
+```
+
 Changing a Flame's namespace creates a separate identity boundary. Existing
 workers and exported clients must join/use the new namespace; their identities
 are not migrated or shared automatically.

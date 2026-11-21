@@ -223,7 +223,11 @@ done
 # fixture before startup reconciles the bundled flmping application manifest.
 mutate "$spare_session" close > "$runtime/action-close-spare.json"
 wait_session_state "$spare_session" 1
-helm upgrade flame-cluster charts/flame-cluster --namespace flame-system --reuse-values --set 'flames[0].rolloutRevision=functional-restart'
+# Load the complete stored list before applying an indexed override. --reuse-values
+# merges the partial --set list later and would replace the other Flame settings.
+upgrade_values="$(mktemp "$runtime/upgrade-values.XXXXXX")"
+helm get values flame-cluster --namespace flame-system --output yaml > "$upgrade_values"
+helm upgrade flame-cluster charts/flame-cluster --namespace flame-system --values "$upgrade_values" --set 'flames[0].rolloutRevision=functional-restart'
 for attempt in {1..60}; do
   if "${kube[@]}" get deployment "$flame_name-session-manager" -o json \
     | jq -e '.spec.template.metadata.annotations["flame.xflops.io/rollout-revision"]=="functional-restart"' >/dev/null; then break; fi

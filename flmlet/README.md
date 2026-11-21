@@ -16,7 +16,7 @@ worker host with `setup.sh` available. The repository's
 operator, then installs flmlet with a durable, worker-scoped local kubeconfig.
 Renewing the cluster bootstrap token does not disrupt already joined workers.
 The selected namespace's token chooses the Flame, for example
-`flame-ns-1/flame-1`. Worker identity and status access remain in that namespace;
+`flame-1/flame-1`. Worker identity and status access remain in that namespace;
 another namespace's objects and client Secrets are forbidden.
 Keep tokens and the local kubeconfig private. The worker identity can read only
 its own worker, read the selected FlameCluster, and patch its own status.
@@ -36,9 +36,9 @@ release does not provide a tenant security boundary for Host-shim execution.
 For manual diagnosis with already provisioned credentials:
 
 ```sh
-flmlet --worker flm-worker-01 --namespace flame-ns-1 \
+flmlet --worker flm-worker-01 --namespace flame-1 \
   --kubeconfig /usr/local/flame/conf/flmlet/kubeconfig --check
-flmlet --worker flm-worker-01 --namespace flame-ns-1 \
+flmlet --worker flm-worker-01 --namespace flame-1 \
   --kubeconfig /usr/local/flame/conf/flmlet/kubeconfig --once
 ```
 
@@ -102,3 +102,5 @@ join token to reconnect. Neither deletion nor revocation deletes local data.
 
 Tests use an in-memory host/command runner and temporary files; they never invoke
 host systemd. Run `cargo test -p flmlet` and `cargo clippy -p flmlet --all-targets`.
+
+Runtime archive downloads allow up to 15 minutes, with a strict 15 minute 30 second process deadline covering retries. This accommodates slow links while retaining TLS and release-checksum verification. The upstream installation step has its own timeout.

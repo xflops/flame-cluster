@@ -14,7 +14,7 @@ controller namespace is `envoy-gateway-system`; set the gateway fields to match
 the installation.
 
 The combined cluster chart generates one-based indexed resources, such as
-`flame-ns-1/flame-1`, from its `flames` list. Each Flame has its own namespace;
+`flame-1/flame-1`, from its `flames` list. Each Flame has its own namespace;
 its client bundle, workers, join Secret, and enrollment Roles stay there.
 
 For each cluster, the operator manages one session-manager Deployment, a

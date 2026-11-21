@@ -56,7 +56,7 @@ class Render(unittest.TestCase):
         config = render(values, 'connections.yaml').stdout.split('  connections.json: |\n', 1)[1]
         connections = json.loads(config)
         self.assertEqual([connection['id'] for connection in connections], names)
-        self.assertEqual([connection['displayName'] for connection in connections], ['training-ns-1/training-1', 'training-ns-2/training-2'])
+        self.assertEqual([connection['displayName'] for connection in connections], ['training-1/training-1', 'training-2/training-2'])
         deployment = render(values, 'deployment.yaml').stdout
         self.assertIn('  name: cluster\n', deployment)
         self.assertIn('FLAME_CONNECTIONS_FILE', deployment)
@@ -83,9 +83,9 @@ class Render(unittest.TestCase):
             {'namespace': 'custom-flame-ns', 'gateway': {'hostname': '192.168.3.11'}},
         ]}
         resources = render(values, 'flames.yaml').stdout
-        self.assertEqual(re.findall(r'^  namespace: (.+)$', resources, re.M), ['flame-ns-1', 'custom-flame-ns'])
+        self.assertEqual(re.findall(r'^  namespace: (.+)$', resources, re.M), ['flame-1', 'custom-flame-ns'])
         namespaces = render(values, 'namespaces.yaml').stdout
-        self.assertEqual(re.findall(r'^  name: (.+)$', namespaces, re.M), ['flame-ns-1', 'custom-flame-ns'])
+        self.assertEqual(re.findall(r'^  name: (.+)$', namespaces, re.M), ['flame-1', 'custom-flame-ns'])
         self.assertEqual(namespaces.count('helm.sh/resource-policy: keep'), 2)
         self.assertEqual(namespaces.count('meta.helm.sh/release-name: "test-release"'), 2)
         self.assertEqual(namespaces.count('meta.helm.sh/release-namespace: "team-a"'), 2)
@@ -96,7 +96,7 @@ class Render(unittest.TestCase):
         self.assertEqual(rbac.count('  - apiGroups: [flame.xflops.io]'), 2)
         self.assertEqual(rbac.count('    resources: [flameworkers]'), 2)
         self.assertEqual(rbac.count('    verbs: [get, list]'), 2)
-        self.assertCountEqual(re.findall(r'^  namespace: (.+)$', rbac, re.M), ['team-a', 'flame-ns-1', 'flame-ns-1', 'custom-flame-ns', 'custom-flame-ns'])
+        self.assertCountEqual(re.findall(r'^  namespace: (.+)$', rbac, re.M), ['team-a', 'flame-1', 'flame-1', 'custom-flame-ns', 'custom-flame-ns'])
         self.assertEqual(rbac.count('    namespace: team-a'), 2)
         for name in ['flame-1', 'flame-2']:
             self.assertIn(f'resourceNames: ["{name}-join", "{name}-client"]', rbac)
@@ -106,6 +106,18 @@ class Render(unittest.TestCase):
         failure = render(values, check=False)
         self.assertNotEqual(failure.returncode, 0)
         self.assertIn('distinct namespace', failure.stderr)
+
+    def test_explicit_existing_namespace_survives_new_default_naming(self):
+        values = {'flames': [
+            {'namespace': 'flame-ns-1', 'gateway': {'hostname': '192.168.3.10'}},
+            {},
+        ]}
+        resources = render(values, 'flames.yaml').stdout
+        self.assertEqual(re.findall(r'^  namespace: (.+)$', resources, re.M), ['flame-ns-1', 'flame-2'])
+        config = render(values, 'connections.yaml').stdout.split('  connections.json: |\n', 1)[1]
+        connections = json.loads(config)
+        self.assertEqual([item['namespace'] for item in connections], ['flame-ns-1', 'flame-2'])
+        self.assertEqual(connections[0]['endpoint'], 'https://flame-1-session-manager.flame-ns-1.svc:8080')
 
     def test_partial_flames_inherit_only_shared_endpoint_discovery_defaults(self):
         values = {'flames': [
@@ -151,7 +163,7 @@ class Render(unittest.TestCase):
         values = {'flames': [{'gateway': {'hostname': '192.168.3.10'}}]}
         resources = render(values, 'flames.yaml').stdout
         self.assertIn('name: flame-1', resources)
-        self.assertIn('namespace: flame-ns-1', resources)
+        self.assertIn('namespace: flame-1', resources)
         self.assertIn('nodePort: 30080', resources)
         self.assertIn('storageSize: 20Gi', resources)
         self.assertIn('clientAuth: true', resources)

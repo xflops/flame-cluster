@@ -39,12 +39,12 @@ kubectl --kubeconfig "$install_kubeconfig" config set-cluster "$install_cluster"
 sh setup.sh --artifacts-dir "$E2E_ARTIFACTS" --hostname flame.e2e.test \
   --values "$runtime/install-values.yaml" --image-tag "sha-$GITHUB_SHA-amd64" \
   --kubeconfig "$install_kubeconfig" --endpoint "$node_ip:30080" \
-  --console-endpoint https://flame-1-session-manager.flame-ns-1.svc:8080 \
+  --console-endpoint https://flame-1-session-manager.flame-1.svc:8080 \
   --kubernetes-endpoint "https://$node_ip:6443"
-kubectl -n flame-ns-1 wait flamecluster/flame-1 --for=condition=Ready --timeout=10m
-kubectl -n flame-ns-2 wait flamecluster/flame-2 --for=condition=Ready --timeout=10m
+kubectl -n flame-1 wait flamecluster/flame-1 --for=condition=Ready --timeout=10m
+kubectl -n flame-2 wait flamecluster/flame-2 --for=condition=Ready --timeout=10m
 # Envoy exposes matching listener/Service/NodePorts on every routable node.
-envoy_selector='gateway.envoyproxy.io/owning-gateway-name=flame-1-gateway,gateway.envoyproxy.io/owning-gateway-namespace=flame-ns-1'
+envoy_selector='gateway.envoyproxy.io/owning-gateway-name=flame-1-gateway,gateway.envoyproxy.io/owning-gateway-namespace=flame-1'
 kubectl -n envoy-gateway-system get services -l "$envoy_selector" -o json > "$runtime/envoy-services.json"
 jq -e '.items | length==1 and all(.[];
   .spec.type=="NodePort" and .spec.externalTrafficPolicy=="Cluster"
@@ -63,7 +63,7 @@ for attempt in {1..30}; do
 done
 curl -fsS http://127.0.0.1:18090/ -o "$runtime/index.html"
 test -s "$runtime/index.html"
-curl -fsS http://127.0.0.1:18090/api/connection | jq -e '.endpoint=="https://flame-1-session-manager.flame-ns-1.svc:8080"'
+curl -fsS http://127.0.0.1:18090/api/connection | jq -e '.endpoint=="https://flame-1-session-manager.flame-1.svc:8080"'
 # Read shapes alone are only deployment smoke coverage. Require real execution,
 # persisted metadata, and browser-driven mutations against this deployed FLM.
 bash ci/functional.sh "$runtime"

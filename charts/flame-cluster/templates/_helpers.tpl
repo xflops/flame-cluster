@@ -51,7 +51,7 @@ gateway:
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $namespace := default (printf "%s-ns-%d" $flame.name (add $index 1)) $flame.namespace -}}
+{{- $namespace := default (printf "%s-%d" $flame.name (add $index 1)) $flame.namespace -}}
 {{- if or (gt (len $namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $namespace)) (hasKey $namespaces $namespace) -}}
 {{- fail "each flames entry requires a distinct namespace that is a DNS label of at most 63 characters" -}}
 {{- end -}}

@@ -392,13 +392,13 @@ mod tests {
             r#"[{"id":"flame","endpoint":"https://flm:8080","certFile":"/cert.pem"}]"#,
             r#"[{"id":"flame","endpoint":"http://flm:8080","joinTokenFile":"/token"}]"#,
             r#"[{"id":"flame","endpoint":"http://flm:8080","allowedHosts":["*"]}]"#,
-            r#"[{"id":"flame","endpoint":"http://flm:8080","joinNamespace":"flame-ns-1"}]"#,
-            r#"[{"id":"flame","endpoint":"http://flm:8080","joinNamespace":"flame-ns-1","joinSecret":"flame-join","joinTokenFile":"/token","joinExpiryFile":"/expiry"}]"#,
-            r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"flame-ns-1","joinNamespace":"flame-ns-2","joinSecret":"flame-join"}]"#,
+            r#"[{"id":"flame","endpoint":"http://flm:8080","joinNamespace":"flame-1"}]"#,
+            r#"[{"id":"flame","endpoint":"http://flm:8080","joinNamespace":"flame-1","joinSecret":"flame-join","joinTokenFile":"/token","joinExpiryFile":"/expiry"}]"#,
+            r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"flame-1","joinNamespace":"flame-2","joinSecret":"flame-join"}]"#,
             r#"[{"id":"flame","endpoint":"http://flm:8080","joinNamespace":"../other","joinSecret":"flame-join"}]"#,
             r#"[{"id":"flame","endpoint":"http://flm:8080","clientConfigSecret":"flame-client"}]"#,
             r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"","clientConfigSecret":"flame-client"}]"#,
-            r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"flame-ns-1","clientConfigSecret":"../client"}]"#,
+            r#"[{"id":"flame","endpoint":"http://flm:8080","namespace":"flame-1","clientConfigSecret":"../client"}]"#,
         ] {
             std::fs::write(&path, contents).unwrap();
             assert!(
@@ -435,8 +435,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("connections.json");
         std::fs::write(&path, serde_json::to_vec(&json!([
-            {"id":"flame-1","namespace":"flame-ns-1","name":"flame-1","displayName":"flame-ns-1/flame-1","endpoint":"https://flame-1-session-manager.flame-ns-1.svc:8080","joinNamespace":"flame-ns-1","joinSecret":"flame-1-join","clientConfigSecret":"flame-1-client"},
-            {"id":"flame-2","namespace":"flame-ns-2","name":"flame-2","displayName":"flame-ns-2/flame-2","endpoint":"https://flame-2-session-manager.flame-ns-2.svc:8080","joinNamespace":"flame-ns-2","joinSecret":"flame-2-join","clientConfigSecret":"flame-2-client"}
+            {"id":"flame-1","namespace":"flame-1","name":"flame-1","displayName":"flame-1/flame-1","endpoint":"https://flame-1-session-manager.flame-1.svc:8080","joinNamespace":"flame-1","joinSecret":"flame-1-join","clientConfigSecret":"flame-1-client"},
+            {"id":"flame-2","namespace":"flame-2","name":"flame-2","displayName":"flame-2/flame-2","endpoint":"https://flame-2-session-manager.flame-2.svc:8080","joinNamespace":"flame-2","joinSecret":"flame-2-join","clientConfigSecret":"flame-2-client"}
         ])).unwrap()).unwrap();
         let configs = connections_from_values(|name| {
             (name == "FLAME_CONNECTIONS_FILE").then(|| path.to_str().unwrap().into())
@@ -446,7 +446,7 @@ mod tests {
         for (index, (id, config)) in configs.into_iter().enumerate() {
             let number = index + 1;
             assert_eq!(id, format!("flame-{number}"));
-            assert_eq!(config.namespace, Some(format!("flame-ns-{number}")));
+            assert_eq!(config.namespace, Some(format!("flame-{number}")));
             assert_eq!(config.join_namespace, config.namespace);
             assert_eq!(config.join_secret, Some(format!("flame-{number}-join")));
             assert_eq!(

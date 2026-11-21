@@ -57,11 +57,17 @@ class Installer(unittest.TestCase):
         self.env.update(PATH=f'{self.bin}:{os.environ["PATH"]}', INSTALL_TEST_LOG=str(self.log), NO_PROXY='127.0.0.1,localhost')
         self.cluster_objects = self.root / 'cluster-objects.json'
         self.env['INSTALL_TEST_CLUSTER_OBJECTS'] = str(self.cluster_objects)
-        self.rendered_flames([('flame-ns-1', 'flame-1', 'flame-client-ca')])
+        self.rendered_flames([('flame-1', 'flame-1', 'flame-client-ca')])
         write(self.bin / 'helm', '''#!/bin/sh
 printf 'helm %s\\n' "$*" >> "$INSTALL_TEST_LOG"
 case "$*" in
   *'template flame-cluster '*) printf 'nodePort: 30080\\ngateway:\\n  className: flame-envoy\\n  issuerName: flame-client-ca\\n  sessionPort: %s\\n  cachePort: 31443\\n' "${INSTALL_TEST_SESSION_PORT:-30443}" ;;
+  *'list --namespace '*)
+    [ "${INSTALL_TEST_RELEASE_ERROR:-0}" != 1 ] || exit 1
+    printf '%s\\n' "${INSTALL_TEST_RELEASES:-[]}" ;;
+  *'get manifest flame-cluster '*)
+    [ "${INSTALL_TEST_MANIFEST_ERROR:-0}" != 1 ] || exit 1
+    printf 'kind: List\\n' ;;
   *'template flame-ui '*) [ "${INSTALL_TEST_BAD_RENDER:-0}" != 1 ] || exit 1 ;;
 esac
 if [ "${INSTALL_TEST_MULTI:-0}" = 1 ]; then
@@ -72,7 +78,9 @@ fi
 printf 'kubectl %s\\n' "$*" >> "$INSTALL_TEST_LOG"
 case "$*" in
   *'config view --minify'*) printf '%s\\n' "${INSTALL_TEST_KUBE_SERVER-https://192.168.3.10:6443}" ;;
-  *'create --dry-run=client --validate=false'*) cat "$INSTALL_TEST_CLUSTER_OBJECTS" ;;
+  *'create --dry-run=client --validate=false'*)
+    case "$*" in *'/previous-cluster.yaml'*) cat "$INSTALL_TEST_PREVIOUS_OBJECTS" ;;
+      *) cat "$INSTALL_TEST_CLUSTER_OBJECTS" ;; esac ;;
   *'get configmap '*)
     [ "${INSTALL_TEST_MISSING_CA:-0}" != 1 ] || exit 1
     printf '%s\\n' '{"apiVersion":"v1","kind":"ConfigMap","data":{"ca.crt":"PUBLIC-CA","unrelated":"MUST-NOT-COPY"}}' ;;
@@ -238,6 +246,62 @@ esac
         self.assertIn('flames[0].kubernetesEndpoint=https://192.168.3.20:7443', operations)
         self.assert_ui_exposure(result, '192.168.3.20', '192.168.3.20')
 
+    def previous_release(self, objects):
+        path = self.root / 'previous-objects.json'
+        path.write_text(objects)
+        self.env.update(INSTALL_TEST_RELEASES='[{"name":"flame-cluster"}]', INSTALL_TEST_PREVIOUS_OBJECTS=str(path))
+
+    def test_upgrade_rejects_implicit_namespace_move_before_any_mutation(self):
+        self.previous_release(json.dumps({'kind': 'List', 'items': [
+            {'kind': 'FlameCluster', 'metadata': {'namespace': 'flame-ns-1', 'name': 'flame-1'}},
+        ]}))
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('flame-ns-1/flame-1', result.stderr)
+        self.assertIn('--values flame-values.yaml', result.stderr)
+        self.assertIn('FULL flames list', result.stderr)
+        self.assertIn('namespace explicitly', result.stderr)
+        self.no_install()
+        self.assertNotIn('apply --server-side', self.operations())
+
+    def test_upgrade_preserves_explicit_existing_namespaces_and_supports_object_streams(self):
+        self.previous_release(json.dumps({'kind': 'Namespace', 'metadata': {'name': 'flame-ns-1'}})
+            + '\n' + json.dumps({'kind': 'FlameCluster', 'metadata': {'namespace': 'flame-ns-1', 'name': 'flame-1'}}))
+        values = self.root / 'retained-values.yaml'
+        values.write_text('flames:\n  - name: flame\n    namespace: flame-ns-1\n')
+        self.rendered_flames([('flame-ns-1', 'flame-1', 'flame-client-ca')])
+        result = self.run_setup('--values', str(values))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('-n flame-ns-1 wait flamecluster/flame-1 ', self.operations())
+        operations = self.operations()
+        self.assertLess(operations.index('get manifest flame-cluster'), operations.index('apply --server-side'))
+
+    def test_upgrade_inspection_errors_fail_before_mutation(self):
+        for environment in [
+            {'INSTALL_TEST_RELEASE_ERROR': '1'},
+            {'INSTALL_TEST_RELEASES': 'not json'},
+            {'INSTALL_TEST_RELEASES': '{}'},
+            {'INSTALL_TEST_RELEASES': '[{"name":"another-release"}]'},
+            {'INSTALL_TEST_RELEASES': '[{"name":"flame-cluster"}]', 'INSTALL_TEST_MANIFEST_ERROR': '1'},
+        ]:
+            with self.subTest(environment=environment):
+                result = self.run_setup(**environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.no_install()
+                self.assertNotIn('apply --server-side', self.operations())
+
+    def test_malformed_or_empty_prior_flame_identities_fail_closed(self):
+        for objects in ['not json', '{}', '{"kind":"List","items":{}}', json.dumps({
+            'kind': 'FlameCluster', 'metadata': {'namespace': 'flame-ns-1'},
+        })]:
+            with self.subTest(objects=objects):
+                self.previous_release(objects)
+                result = self.run_setup()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('cannot validate', result.stderr)
+                self.no_install()
+                self.assertNotIn('apply --server-side', self.operations())
+
     def test_non_lan_kubeconfig_ui_address_keeps_explicit_worker_frontend(self):
         result = self.run_setup('--endpoint', '192.168.3.10:30080', INSTALL_TEST_KUBE_SERVER='https://100.117.27.41:6443')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -301,14 +365,14 @@ esac
     def test_values_file_preserves_custom_first_flame_name_and_version(self):
         values = self.root / 'custom-flame.yaml'
         values.write_text('flames:\n  - name: training\n    version: v0.8.0\n')
-        self.rendered_flames([('training-ns-1', 'training-1', 'flame-client-ca')])
+        self.rendered_flames([('training-1', 'training-1', 'flame-client-ca')])
         result = self.run_setup('--values', str(values))
         self.assertEqual(result.returncode, 0, result.stderr)
         operations = self.operations()
         self.assertNotIn('flames[0].name=', operations)
         self.assertNotIn('flames[0].version=', operations)
-        self.assertIn('-n training-ns-1 wait flamecluster/training-1 ', operations)
-        self.assertIn('Flame training-ns-1/training-1 is ready.', result.stdout)
+        self.assertIn('-n training-1 wait flamecluster/training-1 ', operations)
+        self.assertIn('Flame training-1/training-1 is ready.', result.stdout)
         for invocation in operations.splitlines():
             if 'template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
                 self.assertIn(f'--values {values}', invocation)
@@ -316,14 +380,14 @@ esac
     def test_explicit_first_flame_name_and_version_override_values(self):
         values = self.root / 'custom-flame.yaml'
         values.write_text('flames:\n  - name: training\n    version: v0.8.0\n')
-        self.rendered_flames([('inference-ns-1', 'inference-1', 'flame-client-ca')])
+        self.rendered_flames([('inference-1', 'inference-1', 'flame-client-ca')])
         result = self.run_setup('--values', str(values), '--cluster', 'inference', '--flame-version', 'v0.9.0')
         self.assertEqual(result.returncode, 0, result.stderr)
         for invocation in self.operations().splitlines():
             if 'template flame-cluster ' in invocation or '--install flame-cluster ' in invocation:
                 self.assertIn('flames[0].name=inference', invocation)
                 self.assertIn('flames[0].version=v0.9.0', invocation)
-        self.assertIn('Flame inference-ns-1/inference-1 is ready.', result.stdout)
+        self.assertIn('Flame inference-1/inference-1 is ready.', result.stdout)
 
     def test_invalid_kubeconfig_server_changes_nothing(self):
         for server in ['', 'not-a-url', 'http://node.example.test:6443', 'https://user:secret@node.example.test:6443', 'https://node.example.test:6443/path', 'https://node.example.test:6443?token=secret']:
@@ -400,35 +464,35 @@ esac
         self.assertLess(dryrun, namespace_apply)
         self.assertLess(namespace_apply, trust_apply)
         self.assertLess(trust_apply, install)
-        self.assertIn('kubectl -n flame-ns-1 wait flamecluster/flame-1 ', self.operations())
+        self.assertIn('kubectl -n flame-1 wait flamecluster/flame-1 ', self.operations())
         namespaces = json.loads(Path(str(self.log) + '.namespaces.json').read_text())['items']
-        self.assertEqual(namespaces[0]['metadata']['name'], 'flame-ns-1')
+        self.assertEqual(namespaces[0]['metadata']['name'], 'flame-1')
         self.assertEqual(namespaces[0]['metadata']['annotations']['meta.helm.sh/release-name'], 'flame-cluster')
         self.assertEqual(namespaces[0]['metadata']['annotations']['helm.sh/resource-policy'], 'keep')
         trust = json.loads(Path(str(self.log) + '.public-trust.json').read_text())['items']
-        self.assertEqual(trust, [{'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'flame-client-ca', 'namespace': 'flame-ns-1'}, 'data': {'ca.crt': 'PUBLIC-CA'}}])
+        self.assertEqual(trust, [{'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'flame-client-ca', 'namespace': 'flame-1'}, 'data': {'ca.crt': 'PUBLIC-CA'}}])
         self.assertNotIn('get secret', self.operations())
 
     def test_multiple_flames_check_every_dependency_and_wait_in_their_namespaces(self):
-        self.rendered_flames([('flame-ns-1', 'flame-1', 'flame-client-ca'), ('custom-ns', 'training-2', 'second-ca')])
+        self.rendered_flames([('flame-1', 'flame-1', 'flame-client-ca'), ('custom-ns', 'training-2', 'second-ca')])
         result = self.run_setup(INSTALL_TEST_MULTI='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         operations = self.operations()
         for dependency in ['gatewayclass flame-envoy', 'gatewayclass second-envoy', 'clusterissuer flame-client-ca', 'clusterissuer second-ca']:
             self.assertIn(f'get {dependency}', operations)
         self.assertEqual(operations.count('get gatewayclass flame-envoy'), 1)
-        self.assertIn('-n flame-ns-1 wait flamecluster/flame-1 ', operations)
+        self.assertIn('-n flame-1 wait flamecluster/flame-1 ', operations)
         self.assertIn('-n custom-ns wait flamecluster/training-2 ', operations)
         trust = json.loads(Path(str(self.log) + '.public-trust.json').read_text())['items']
-        self.assertEqual({item['metadata']['namespace'] for item in trust}, {'flame-ns-1', 'custom-ns'})
+        self.assertEqual({item['metadata']['namespace'] for item in trust}, {'flame-1', 'custom-ns'})
         self.assertTrue(all(set(item['data']) == {'ca.crt'} for item in trust))
         self.assertNotIn('get secret', operations)
 
     def test_namespace_preflight_also_accepts_a_kubernetes_list(self):
-        self.rendered_flames([('flame-ns-1', 'flame-1', 'flame-client-ca')], list_output=True)
+        self.rendered_flames([('flame-1', 'flame-1', 'flame-client-ca')], list_output=True)
         result = self.run_setup()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('-n flame-ns-1 wait flamecluster/flame-1 ', self.operations())
+        self.assertIn('-n flame-1 wait flamecluster/flame-1 ', self.operations())
 
     def test_namespace_preflight_reports_malformed_json_without_echoing_contents(self):
         with self.cluster_objects.open('a') as output:

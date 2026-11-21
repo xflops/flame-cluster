@@ -566,8 +566,8 @@ async fn managed_join_lookups_are_exact_and_isolated_to_each_flame_namespace() {
     let expiry = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
     let secrets = Arc::new(Mutex::new(BTreeMap::new()));
     let paths = Arc::new(Mutex::new(Vec::new()));
-    let first_path = "/api/v1/namespaces/flame-ns-1/secrets/flame-1-join";
-    let second_path = "/api/v1/namespaces/flame-ns-2/secrets/flame-2-join";
+    let first_path = "/api/v1/namespaces/flame-1/secrets/flame-1-join";
+    let second_path = "/api/v1/namespaces/flame-2/secrets/flame-2-join";
     for (path, token) in [(first_path, "Zmlyc3Q="), (second_path, "c2Vjb25k")] {
         let secret = Secret {
             data: Some(BTreeMap::from([
@@ -613,9 +613,9 @@ async fn managed_join_lookups_are_exact_and_isolated_to_each_flame_namespace() {
     let mut configs = Vec::new();
     for number in 1..=2 {
         let mut config = ConnectionConfig::new(format!("http://flame-{number}:8080"));
-        config.namespace = Some(format!("flame-ns-{number}"));
+        config.namespace = Some(format!("flame-{number}"));
         config.name = Some(format!("flame-{number}"));
-        config.display_name = format!("flame-ns-{number}/flame-{number}");
+        config.display_name = format!("flame-{number}/flame-{number}");
         config.join_namespace = config.namespace.clone();
         config.join_secret = Some(format!("flame-{number}-join"));
         assert!(
@@ -630,8 +630,8 @@ async fn managed_join_lookups_are_exact_and_isolated_to_each_flame_namespace() {
     let app = fleet_router(configs).unwrap();
     let (status, catalog) = get(app.clone(), "/api/connections").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(catalog["items"][0]["namespace"], "flame-ns-1");
-    assert_eq!(catalog["items"][1]["namespace"], "flame-ns-2");
+    assert_eq!(catalog["items"][0]["namespace"], "flame-1");
+    assert_eq!(catalog["items"][1]["namespace"], "flame-2");
     assert!(
         paths.lock().unwrap().is_empty(),
         "metadata must not fetch any Secret"
@@ -1146,8 +1146,8 @@ async fn client_bundle_downloads_use_only_the_selected_namespace_secret_and_atta
         "current-context: first\ncontexts:\n  - name: first\n    key_data: PRIVATE_FIRST\n";
     let second_bundle =
         "current-context: second\ncontexts:\n  - name: second\n    key_data: PRIVATE_SECOND\n";
-    let first_path = "/api/v1/namespaces/flame-ns-1/secrets/flame-1-client";
-    let second_path = "/api/v1/namespaces/flame-ns-2/secrets/flame-2-client";
+    let first_path = "/api/v1/namespaces/flame-1/secrets/flame-1-client";
+    let second_path = "/api/v1/namespaces/flame-2/secrets/flame-2-client";
     let replies = Arc::new(Mutex::new(BTreeMap::new()));
     let paths = Arc::new(Mutex::new(Vec::new()));
     for (path, bundle) in [(first_path, first_bundle), (second_path, second_bundle)] {
@@ -1194,7 +1194,7 @@ async fn client_bundle_downloads_use_only_the_selected_namespace_secret_and_atta
     let mut configs = Vec::new();
     for number in 1..=2 {
         let mut config = ConnectionConfig::new(format!("http://flame-{number}:8080"));
-        config.namespace = Some(format!("flame-ns-{number}"));
+        config.namespace = Some(format!("flame-{number}"));
         config.client_config_secret = Some(format!("flame-{number}-client"));
         assert!(
             AppState::connect(config.clone()).is_err(),
@@ -1235,7 +1235,7 @@ async fn client_bundle_downloads_use_only_the_selected_namespace_secret_and_atta
     for (uri, bundle) in [
         ("/api/flame.yaml", first_bundle),
         (
-            "/api/connections/flame-2/flame.yaml?namespace=flame-ns-1&secret=flame-1-client",
+            "/api/connections/flame-2/flame.yaml?namespace=flame-1&secret=flame-1-client",
             second_bundle,
         ),
         ("/api/connections/flame-1/flame.yaml", first_bundle),
@@ -1389,16 +1389,16 @@ async fn nodes_show_namespaced_enrolled_workers_before_fem_and_filter_sort_and_p
     use std::sync::{Arc, Mutex};
     let paths = Arc::new(Mutex::new(Vec::new()));
     let requests = paths.clone();
-    let mut ready = worker_record("flame-ns-1", "flame-1", "zulu");
+    let mut ready = worker_record("flame-1", "flame-1", "zulu");
     ready["metadata"]["annotations"] = json!({"genuine":"annotation"});
     ready["status"] = json!({"observedGeneration":1,"registered":true,"fem":{"activeState":"active"},
         "lastHeartbeatTime":chrono::Utc::now().to_rfc3339(),"conditions":[{"type":"Ready","status":"True","observedGeneration":1}],"futureGenuineField":"preserved"});
     let first_ready = ready.clone();
-    let mut disabled = worker_record("flame-ns-1", "flame-1", "alpha");
+    let mut disabled = worker_record("flame-1", "flame-1", "alpha");
     disabled["spec"]["disabled"] = json!(true);
-    let mut not_ready = worker_record("flame-ns-1", "flame-1", "beta");
+    let mut not_ready = worker_record("flame-1", "flame-1", "beta");
     not_ready["status"] = json!({"observedGeneration":1,"registered":false});
-    let mut deleting = worker_record("flame-ns-1", "flame-1", "gamma");
+    let mut deleting = worker_record("flame-1", "flame-1", "gamma");
     deleting["metadata"]["deletionTimestamp"] = json!(chrono::Utc::now().to_rfc3339());
     let client = kube::Client::new(
         tower::service_fn(move |request: Request<kube::client::Body>| {
@@ -1408,24 +1408,20 @@ async fn nodes_show_namespaced_enrolled_workers_before_fem_and_filter_sort_and_p
             requests.lock().unwrap().push(path.clone());
             let continued = request.uri().query().unwrap().contains("continue=next");
             let (items, metadata) = match path.as_str() {
-                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-1/flameworkers"
-                    if !continued =>
-                {
-                    (
-                        vec![
-                            first_ready.clone(),
-                            worker_record("flame-ns-1", "another-flame", "unrelated"),
-                            worker_record("flame-ns-1", "flame-1", "pending"),
-                        ],
-                        json!({"resourceVersion":"7","continue":"next","remainingItemCount":3}),
-                    )
-                }
-                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-1/flameworkers" => (
+                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-1/flameworkers" if !continued => (
+                    vec![
+                        first_ready.clone(),
+                        worker_record("flame-1", "another-flame", "unrelated"),
+                        worker_record("flame-1", "flame-1", "pending"),
+                    ],
+                    json!({"resourceVersion":"7","continue":"next","remainingItemCount":3}),
+                ),
+                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-1/flameworkers" => (
                     vec![disabled.clone(), not_ready.clone(), deleting.clone()],
                     json!({"resourceVersion":"7"}),
                 ),
-                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-2/flameworkers" => (
-                    vec![worker_record("flame-ns-2", "flame-2", "second-only")],
+                "/apis/flame.xflops.io/v1alpha1/namespaces/flame-2/flameworkers" => (
+                    vec![worker_record("flame-2", "flame-2", "second-only")],
                     json!({"resourceVersion":"8"}),
                 ),
                 _ => panic!("unexpected Kubernetes path {path}"),
@@ -1443,11 +1439,11 @@ async fn nodes_show_namespaced_enrolled_workers_before_fem_and_filter_sort_and_p
         ..Default::default()
     })
     .await;
-    first.namespace = Some("flame-ns-1".into());
+    first.namespace = Some("flame-1".into());
     first.name = Some("flame-1".into());
     first.kube_client = Some(client.clone());
     let mut second = first.clone();
-    second.namespace = Some("flame-ns-2".into());
+    second.namespace = Some("flame-2".into());
     second.name = Some("flame-2".into());
     let app = fleet_router(vec![("flame-1".into(), first), ("flame-2".into(), second)]).unwrap();
     let (status, page) = get(app.clone(), "/api/nodes?pageSize=2").await;
@@ -1530,7 +1526,7 @@ async fn worker_inventory_errors_and_incomplete_or_invalid_chunks_never_return_p
             tower::service_fn(move |request: Request<kube::client::Body>| {
                 assert_eq!(
                     request.uri().path(),
-                    "/apis/flame.xflops.io/v1alpha1/namespaces/flame-ns-1/flameworkers"
+                    "/apis/flame.xflops.io/v1alpha1/namespaces/flame-1/flameworkers"
                 );
                 let number = {
                     let mut count = count.lock().unwrap();
@@ -1544,8 +1540,7 @@ async fn worker_inventory_errors_and_incomplete_or_invalid_chunks_never_return_p
                         json!({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","message":"PRIVATE_KUBE_ERROR","code":403}),
                     )
                 } else {
-                    let mut row =
-                        worker_record("flame-ns-1", "flame-1", &format!("worker-{number}"));
+                    let mut row = worker_record("flame-1", "flame-1", &format!("worker-{number}"));
                     if mode == "cross-namespace" {
                         row["metadata"]["namespace"] = json!("another-namespace");
                     }
@@ -1557,7 +1552,7 @@ async fn worker_inventory_errors_and_incomplete_or_invalid_chunks_never_return_p
                     } else if mode == "too-large" {
                         (0..501)
                             .map(|index| {
-                                worker_record("flame-ns-1", "flame-1", &format!("worker-{index}"))
+                                worker_record("flame-1", "flame-1", &format!("worker-{index}"))
                             })
                             .collect()
                     } else {
@@ -1588,7 +1583,7 @@ async fn worker_inventory_errors_and_incomplete_or_invalid_chunks_never_return_p
             "management",
         );
         let mut config = ConnectionConfig::new("http://127.0.0.1:9");
-        config.namespace = Some("flame-ns-1".into());
+        config.namespace = Some("flame-1".into());
         config.name = Some("flame-1".into());
         let state = AppState::connect_with_kubernetes(config, Some(client)).unwrap();
         let (status, body) = get(router(state), "/api/nodes").await;

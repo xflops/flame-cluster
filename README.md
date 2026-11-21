@@ -68,7 +68,7 @@ values; `gateway.ingressIp` is optional advertised-address metadata only.
 The management Service and Deployment are `cluster`; its image is
 `docker.io/xflops/flame-cluster`. The combined `flame-cluster` chart always runs
 that service. Its settings live under `cluster`, and `flames` is an ordered list
-of Flame configurations. The default first resource is `flame-ns-1/flame-1`;
+of Flame configurations. The default first resource is `flame-1/flame-1`;
 further entries receive indexed names and separate namespaces and ports.
 
 Each namespace owns its FlameCluster, FlameWorkers, client credentials, and join

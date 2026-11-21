@@ -67,18 +67,27 @@ cluster:
     allowedHosts: [localhost, 127.0.0.1, "::1", "100.117.27.41"]
 flames:
   - name: flame
-    namespace: flame-ns-1
+    namespace: flame-1
     gateway:
       hostname: 192.168.3.149
   - name: flame
-    namespace: flame-ns-2
+    namespace: flame-2
 ```
 
-Names receive a one-based index: this example creates `flame-ns-1/flame-1` and
-`flame-ns-2/flame-2`. Omitting namespace derives `<name>-ns-<index>`; duplicate
+Names receive a one-based index: this example creates `flame-1/flame-1` and
+`flame-2/flame-2`. Omitting namespace derives `<name>-<index>`; duplicate
 namespaces are rejected. Partial entries inherit resource defaults. Additional
 entries inherit omitted gateway host, frontend host, and Kubernetes endpoint
 from the first entry; explicit per-entry values are retained.
+
+For an existing installation, retain each entry's current namespace explicitly
+when upgrading (for example, `namespace: flame-ns-1` from an earlier default).
+Changing namespace creates a separate Flame; it does not migrate existing PVCs,
+worker identities, or credentials.
+The installer compares the stored release's Flame identities with its proposed
+render before any Kubernetes mutation and rejects removed or moved identities.
+On rejection, export the current Helm values and pass the complete `flames`
+list with explicit retained namespaces using `--values flame-values.yaml`.
 
 Each entry supports `version`, `image`, `endpoint`, `endpointHost`,
 `kubernetesEndpoint`, `rolloutRevision`, `nodePort`, `storageSize`, `storageClass`,
@@ -96,7 +105,7 @@ Secret access.
 
 Each Flame namespace contains its FlameCluster, enrolled FlameWorkers, server
 and client certificates, generated client bundle, join Secret, workload Services,
-and enrollment RBAC. A default first worker joins `flame-ns-1/flame-1` using the
+and enrollment RBAC. A default first worker joins `flame-1/flame-1` using the
 namespace encoded in its selected join token. Its Kubernetes identity can read
 only its named worker and FlameCluster and patch its own status in that namespace.
 It cannot read client Secrets or objects in another namespace.
@@ -121,7 +130,7 @@ end users or implement tenant authorization.
 ## UI and direct access
 
 Open `http://<kubeconfig-server-ip>/`. The selector shows namespaces only, such
-as `flame-ns-1` and `flame-ns-2`. `/` opens the first configured Flame directly.
+as `flame-1` and `flame-2`. `/` opens the first configured Flame directly.
 Selecting another namespace switches resources, session actions, join
 credentials, and client downloads together.
 

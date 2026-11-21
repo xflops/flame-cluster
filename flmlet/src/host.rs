@@ -114,6 +114,8 @@ impl Host for LocalHost {
         let temporary = tempfile::tempdir()?;
         let installer = temporary.path().join("setup.sh");
         let fetch = |host: &mut Self, url: &str, path: &Path| -> Result<bool> {
+            // Runtime archives exceed 60 MB; slow links need more than three minutes.
+            // The process deadline bounds all attempts, including an in-flight retry.
             let args = [
                 "--fail",
                 "--silent",
@@ -124,7 +126,9 @@ impl Host for LocalHost {
                 "--connect-timeout",
                 "15",
                 "--max-time",
-                "180",
+                "900",
+                "--retry-max-time",
+                "900",
                 "--output",
                 path.to_str()
                     .ok_or_else(|| Error::Invalid("invalid temporary path".into()))?,
@@ -132,7 +136,7 @@ impl Host for LocalHost {
             ]
             .map(String::from);
             Ok(host
-                .run(Path::new("curl"), &args, Duration::from_secs(195))?
+                .run(Path::new("curl"), &args, Duration::from_secs(930))?
                 .success)
         };
         let mut args = installer_arguments(&installer, settings, version, python, force);

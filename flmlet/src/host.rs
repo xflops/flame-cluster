@@ -15,7 +15,7 @@ fn invalid_github_mirror() -> Error {
     Error::Invalid("FLAME_GITHUB_MIRROR must be an absolute HTTPS URL prefix without credentials, query, or fragment".into())
 }
 
-/// Only the archive may use an explicitly selected accelerator; its checksum stays official.
+/// Only the archive may use an explicitly selected accelerator.
 fn runtime_download_urls(official: &str, mirror: Option<&str>) -> Result<(String, String)> {
     let archive = if let Some(prefix) = mirror {
         let uri: http::Uri = prefix.parse().map_err(|_| invalid_github_mirror())?;
@@ -35,6 +35,45 @@ fn runtime_download_urls(official: &str, mirror: Option<&str>) -> Result<(String
         official.to_owned()
     };
     Ok((archive, format!("{official}.sha256")))
+}
+
+fn runtime_checksum(
+    pin: Option<&std::ffi::OsStr>,
+    checksum: &Path,
+    fetch_official: impl FnOnce(&Path) -> Result<bool>,
+) -> Result<String> {
+    let validate = |value: &str| {
+        if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            Ok(value.to_ascii_lowercase())
+        } else {
+            Err(Error::Invalid(
+                "FLAME_RUNTIME_SHA256 must contain exactly 64 hexadecimal characters".into(),
+            ))
+        }
+    };
+    if let Some(pin) = pin {
+        return validate(pin.to_str().unwrap_or_default());
+    }
+    if !fetch_official(checksum)? {
+        return Err(Error::Command(
+            "could not download the official Flame installer/runtime".into(),
+        ));
+    }
+    let expected = std::fs::read_to_string(checksum)?;
+    Ok(expected
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase())
+}
+
+fn verify_runtime_archive(archive: &Path, expected: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let actual = format!("{:x}", Sha256::digest(std::fs::read(archive)?));
+    if actual != expected {
+        return Err(Error::Command("Flame runtime checksum mismatch".into()));
+    }
+    Ok(())
 }
 
 fn installer_arguments(
@@ -174,7 +213,6 @@ impl Host for LocalHost {
         {
             // Use the installer bundled in the checksum-verified official release.
             // This also works when the hosted setup.sh endpoint is unavailable.
-            use sha2::{Digest, Sha256};
             let arch = match std::env::consts::ARCH {
                 "x86_64" => "amd64",
                 "aarch64" => "arm64",
@@ -191,17 +229,16 @@ impl Host for LocalHost {
             let (archive_url, checksum_url) = runtime_download_urls(&url, mirror.as_deref())?;
             let archive = temporary.path().join(format!("{name}.tar.gz"));
             let checksum = temporary.path().join(format!("{name}.tar.gz.sha256"));
-            if !fetch(self, &checksum_url, &checksum)? || !fetch(self, &archive_url, &archive)? {
+            let pin = std::env::var_os("FLAME_RUNTIME_SHA256");
+            let expected = runtime_checksum(pin.as_deref(), &checksum, |path| {
+                fetch(self, &checksum_url, path)
+            })?;
+            if !fetch(self, &archive_url, &archive)? {
                 return Err(Error::Command(
                     "could not download the official Flame installer/runtime".into(),
                 ));
             }
-            let expected = std::fs::read_to_string(&checksum)?;
-            let expected = expected.split_whitespace().next().unwrap_or_default();
-            let actual = format!("{:x}", Sha256::digest(std::fs::read(&archive)?));
-            if !actual.eq_ignore_ascii_case(expected) {
-                return Err(Error::Command("Flame runtime checksum mismatch".into()));
-            }
+            verify_runtime_archive(&archive, &expected)?;
             let extracted = self.run(
                 Path::new("tar"),
                 &[
@@ -323,6 +360,90 @@ mod tests {
         let (archive, checksum) = runtime_download_urls(OFFICIAL_ARCHIVE, None).unwrap();
         assert_eq!(archive, OFFICIAL_ARCHIVE);
         assert_eq!(checksum, format!("{OFFICIAL_ARCHIVE}.sha256"));
+    }
+
+    #[test]
+    fn trusted_checksum_pin_skips_fetch_and_needs_no_checksum_file() {
+        let temporary = tempfile::tempdir().unwrap();
+        let checksum = temporary.path().join("absent.sha256");
+        let pin = "AbCd".repeat(16);
+        let expected = runtime_checksum(Some(std::ffi::OsStr::new(&pin)), &checksum, |_| {
+            panic!("a trusted pin must skip checksum network access")
+        })
+        .unwrap();
+        assert_eq!(expected, pin.to_ascii_lowercase());
+        assert!(!checksum.exists());
+    }
+
+    #[test]
+    fn absent_pin_fetches_official_checksum_and_propagates_download_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let checksum = temporary.path().join("runtime.sha256");
+        let digest = "ABCD".repeat(16);
+        let expected = runtime_checksum(None, &checksum, |path| {
+            assert_eq!(path, checksum);
+            assert!(!path.exists());
+            std::fs::write(path, format!("{digest}  runtime.tar.gz\n"))?;
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(expected, digest.to_ascii_lowercase());
+        assert!(runtime_checksum(None, &checksum, |_| Ok(false)).is_err());
+    }
+
+    #[test]
+    fn invalid_checksum_pins_fail_before_fetch_without_echoing_input() {
+        use std::ffi::OsString;
+        let mut invalid = [
+            "",
+            "private-value",
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &format!("{}g", "a".repeat(63)),
+            &format!("{}\n", "a".repeat(64)),
+        ]
+        .map(OsString::from)
+        .to_vec();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            invalid.push(OsString::from_vec(vec![0xff; 64]));
+        }
+        for pin in invalid {
+            let error = runtime_checksum(Some(&pin), Path::new("unused.sha256"), |_| {
+                panic!("an invalid pin must fail before network access")
+            })
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                Error::Invalid(
+                    "FLAME_RUNTIME_SHA256 must contain exactly 64 hexadecimal characters".into()
+                )
+                .to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_pin_still_requires_archive_content_to_match() {
+        let temporary = tempfile::tempdir().unwrap();
+        let archive = temporary.path().join("runtime.tar.gz");
+        std::fs::write(&archive, b"abc").unwrap();
+        let pin = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let expected = runtime_checksum(
+            Some(std::ffi::OsStr::new(pin)),
+            &temporary.path().join("absent.sha256"),
+            |_| panic!("pin skips checksum fetch"),
+        )
+        .unwrap();
+        verify_runtime_archive(&archive, &expected).unwrap();
+        std::fs::write(&archive, b"modified archive").unwrap();
+        assert_eq!(
+            verify_runtime_archive(&archive, &expected)
+                .unwrap_err()
+                .to_string(),
+            Error::Command("Flame runtime checksum mismatch".into()).to_string()
+        );
     }
 
     #[test]

@@ -56,6 +56,24 @@ mirror cannot supply its own trusted checksum. The cluster join script still
 comes from `https://xflops.io/cluster/setup.sh`; this option changes neither that
 source nor SDK/Python download settings.
 
+If the official checksum endpoint is unreachable, supply a trusted digest with
+`FLAME_RUNTIME_SHA256`. Obtain the exact version and architecture's archive
+SHA256 from trusted GitHub release asset metadata/API or an independently
+verified official checksum. Do not obtain the trusted digest from the mirror.
+For example, replace both placeholders before running:
+
+```sh
+curl -fsSL https://xflops.io/cluster/setup.sh | sudo env FLAME_GITHUB_MIRROR=https://gh-proxy.com/ FLAME_RUNTIME_SHA256='<trusted-64-hex-sha256>' sh -s -- --join '<token>'
+```
+
+The pin skips the checksum network request; flmlet still hashes the downloaded
+archive and rejects mismatches before extracting or executing its installer.
+Only exactly 64 hexadecimal characters are accepted; empty, malformed, or
+non-UTF8 pins fail closed. The pin is specific to the selected runtime release
+and architecture, so refresh it when either changes. Without a pin, the official
+checksum download remains required. Both environment settings affect only the
+installer process and its children.
+
 For manual diagnosis with already provisioned credentials:
 
 ```sh

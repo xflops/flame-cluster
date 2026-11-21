@@ -1,6 +1,6 @@
 # Flame Cluster
 
-Rust operator, host worker service, direct FLM console, and web UI for Flame clusters.
+Rust operator, host worker service, management API, and web UI for Flame clusters.
 The Rust implementation replaces the earlier Go operator.
 
 Read the [security boundaries](docs/security.md) before deployment. CRI runtime
@@ -11,7 +11,7 @@ selection is configurable; worker-network isolation remains an SRE responsibilit
 | `flame-api` | Own FlameCluster/FlameWorker definitions, validation, and CRD generation. |
 | [flame-operator](flame-operator/README.md) | Reconcile Flame session-manager storage, services, certificates and gateway routes. |
 | [flmlet](flmlet/README.md) | Install FEM through upstream Flame setup, configure it, and reconcile host services. |
-| [flame-cluster](flame-cluster/README.md) | Read nodes, applications, sessions, executors and tasks directly from a configured namespaced FLMs; forward selected session actions. |
+| [flame-cluster](flame-cluster/README.md) | List namespaced FlameWorkers as Nodes; read applications, sessions, executors and tasks from the selected FLM; forward session actions. |
 | [flame-ui](flame-ui/README.md) | Serve the Flame console at `/`. |
 
 There is no platform operator, logical manager, Terraform, Ansible,
@@ -72,8 +72,11 @@ further entries receive indexed names and separate namespaces and ports.
 
 Each namespace owns its FlameCluster, FlameWorkers, client credentials, and join
 Secret. Worker permissions and gateway client identities are scoped to that
-Flame. The management API may read only the configured exact join and client
-bundle Secrets in each namespace, enabling administrative join commands and
+Flame. Nodes lists FlameWorker resources from the selected namespace and Flame,
+including workers that have not registered with FLM yet. Applications, sessions,
+executors, and tasks continue to come from the selected FLM. The management API
+may get/list FlameWorkers in configured namespaces and read only the configured
+exact join and client-bundle Secrets, enabling administrative join commands and
 client downloads. It cannot list or modify Secrets, or read unrelated server
 private keys. Restrict UI/API access to trusted administrators.
 

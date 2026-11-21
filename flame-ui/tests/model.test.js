@@ -9,8 +9,10 @@ test('routes expose Flame resources and settings with applications as the defaul
 });
 test('state labels retain unknown and missing upstream status', () => {
   assert.equal(stateOf({status:{state:0}}, 'sessions'), 'Open');
-  assert.equal(stateOf({status:{state:99}}, 'nodes'), 'Unknown');
-  assert.equal(stateOf({}, 'nodes'), 'Unknown');
+  assert.equal(stateOf({status:{state:99}}, 'executors'), 'Unknown');
+  assert.equal(stateOf({}, 'nodes'), 'Pending');
+  assert.equal(stateOf({readiness:'Ready'}, 'nodes'), 'Ready');
+  assert.equal(stateOf({readiness:'Disabled',status:{state:1}}, 'nodes'), 'Disabled');
   assert.equal(stateOf({status:{state:2}}, 'tasks'), 'Succeeded');
 });
 test('resource values are formatted and escaped without injecting markup', () => {

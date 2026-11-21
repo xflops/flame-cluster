@@ -63,8 +63,11 @@ named worker/FlameCluster in that namespace. Cross-namespace worker reads and
 client Secret reads are forbidden. Gateway client URI SANs bind namespace, Flame
 name, and UID, preventing a client identity from authenticating to another Flame.
 
-The central management ServiceAccount receives only `get` on each configured
-namespace's exact join and client-bundle Secrets. Settings intentionally exposes
+The central management ServiceAccount receives `get`/`list` on FlameWorkers in
+each configured namespace, and `get` on that namespace's exact join and
+client-bundle Secrets. It cannot write workers or list them cluster-wide. The
+Nodes endpoint filters workers to the selected Flame's `spec.clusterRef` and
+does not fall back to FLM registration inventory. Settings intentionally exposes
 the selected `flame.yaml` bundle, including its TLS client private key, to trusted
 administrators. It cannot list or write Secrets, read unrelated Secrets, or
 retrieve FLM server private keys. Downloads return only the bundle entry, with

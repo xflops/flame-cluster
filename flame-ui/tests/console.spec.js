@@ -3,11 +3,11 @@ import { readFile } from 'node:fs/promises';
 const app = (name,state=0) => ({metadata:{name},spec:{shim:3,command:'/usr/local/flame/bin/flmping-service',description:'Application service'},status:{state,creation_time:1794614400000}});
 const inventory = {
   applications:[app('flmping'),app('flmrun',1),...Array.from({length:13},(_,i)=>app(`python-${i}`))],
-  nodes:[{metadata:{name:'flm-worker-01'},spec:{hostname:'flm-worker-01',shims:[0,3]},status:{state:1,capacity:{cpu:8,memory:16*1024**3,gpu:1},allocatable:{cpu:6},last_heartbeat_time:1794614400,info:{arch:'x86_64',os:'linux',os_image:'Debian GNU/Linux',kernel_version:'6.12'},addresses:[{type:'InternalIP',address:'192.168.3.8'}]}}],
+  nodes:[{metadata:{name:'flm-worker-01',namespace:'training-ns',generation:1},spec:{clusterRef:'training-1',address:'192.168.3.8',shims:['host','cri'],maxExecutors:10,pythonVersion:'3.12',manageObjectCache:true},readiness:'Ready',status:{observedGeneration:1,hostname:'flm-worker-01',registered:true,cacheReady:true,lastHeartbeatTime:'2026-11-14T00:00:00Z',installedVersion:'0.8.0',configHash:'ready-worker-hash',fem:{activeState:'active',subState:'running',message:'success'},objectCache:{activeState:'active',subState:'running',message:'success'},conditions:[{type:'Ready',status:'True',reason:'Registered',message:'Worker registered and services active'}]}}],
   sessions:[{metadata:{id:'session-42'},spec:{application:'flmping',priority:1},status:{state:0,running:2,pending:3,succeed:16,failed:0,creation_time:1794614400000}}],
   executors:[{metadata:{id:'executor-01'},spec:{node:'flm-worker-01',application:'flmping',shim:3,resreq:{cpu:2,memory:1024**3}},status:{state:4,session_id:'session-42'}}],
 };
-const stateNames = {nodes:['Unknown','Ready','Not ready'],applications:['Enabled','Disabled'],sessions:['Open','Closed','Suspending','Suspended'],executors:['Unknown','Void','Idle','Binding','Bound','Unbinding','Releasing','Released']};
+const stateNames = {nodes:['Pending','Ready','Not ready','Disabled','Deleting'],applications:['Enabled','Disabled'],sessions:['Open','Closed','Suspending','Suspended'],executors:['Unknown','Void','Idle','Binding','Bound','Unbinding','Releasing','Released']};
 const connection = {id:'training',endpoint:'http://flm:8080',displayName:'Training Flame',clientConfigAvailable:true};
 const hostedJoin = "curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join 'current-token'";
 const clientBundle = id => `current-context: ${id}\r\ncontexts:\r\n  - name: ${id}\r\n    cluster:\r\n      endpoint: https://${id}:30443\r\n      tls:\r\n        key: PRIVATE-KEY-FIXTURE-${id}\r\n# 火焰\r\n`;
@@ -42,7 +42,7 @@ async function fixture(page, options={}) {
     if(options.fail) return route.fulfill({status:502,json:{error:'FLM is unavailable'}});
     if(!Object.hasOwn(data,resource)) return route.fulfill({status:404,json:{error:'Unknown resource'}});
     if(options.delays?.[resource]) await new Promise(resolve=>setTimeout(resolve,options.delays[resource]));
-    const filter=url.searchParams.get('state'),rows=data[resource].filter(row=>!filter||stateNames[resource][row.status.state]===filter);
+    const filter=url.searchParams.get('state'),rows=data[resource].filter(row=>!filter||(resource==='nodes' ? row.readiness : stateNames[resource][row.status.state])===filter);
     return route.fulfill({json:{items:rows.slice((currentPage-1)*pageSize,currentPage*pageSize),total:rows.length,page:currentPage,pageSize,hasNext:currentPage*pageSize<rows.length}});
   });
 }
@@ -114,14 +114,17 @@ test('compact desktop layout keeps a full resource page visible',async({page})=>
   expect(last.y + last.height).toBeLessThan(900);
   await expect(page.getByRole('button',{name:'Next →',exact:true})).toBeInViewport();
 });
-test('nodes show only direct Flame status and details',async({page})=>{
+test('nodes show FlameWorker enrollment, service status, and details',async({page})=>{
   await fixture(page);await page.goto('/#/nodes');
-  await expect(page.getByRole('columnheader',{name:'Configured',exact:true})).toHaveCount(0);
+  await expect(page.locator('#content th')).toHaveText(['Node','Status','Address','FEM','Cache','Runtime','Executor limit','Heartbeat']);
   await expect(page.locator('#content tbody').getByText('Ready',{exact:true})).toBeVisible();
   await page.getByRole('button',{name:/flm-worker-01/}).click();
-  await expect(page.getByRole('dialog')).toContainText('Debian GNU/Linux');
+  await expect(page.getByRole('dialog')).toContainText('training-ns');
+  await expect(page.getByRole('dialog')).toContainText('training-1');
+  await expect(page.getByRole('dialog')).toContainText('ready-worker-hash');
+  await expect(page.getByRole('dialog')).toContainText('Worker registered and services active');
   await expect(page.getByRole('dialog')).toContainText('192.168.3.8');
-  await expect(page.getByRole('dialog')).not.toContainText('Agent');
+  await expect(page.getByRole('dialog')).not.toContainText(/CPU|Memory capacity|Operating system|GPU/);
 });
 test('session task drawer retains task paging and progress',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');
@@ -171,7 +174,7 @@ const production = {id:'production',namespace:'production-ns',endpoint:'https://
 const productionInventory = {
   ...inventory,
   applications:[app('production-service')],
-  nodes:[{...inventory.nodes[0],metadata:{name:'prod-worker'},spec:{...inventory.nodes[0].spec,hostname:'prod-worker'}}],
+  nodes:[{...inventory.nodes[0],metadata:{name:'prod-worker',namespace:'production-ns'},spec:{...inventory.nodes[0].spec,clusterRef:'production-1',address:'192.168.3.20',shims:['cri'],maxExecutors:24},status:{...inventory.nodes[0].status,hostname:'prod-worker'}}],
   sessions:[{...inventory.sessions[0],metadata:{id:'prod-session'}}],
 };
 const multiple = {connections:[{...connection,namespace:'training-ns'},production],inventories:{production:productionInventory},taskPrefix:true};
@@ -401,4 +404,50 @@ test('changing the namespace aborts an active client download request',async({pa
   await aborted;pending.resolve();
   await expect(page.locator('#download-status')).toBeEmpty();
   await expect(page.getByRole('button',{name:'Download flame.yaml',exact:true})).toBeEnabled();
+});
+
+test('enrolled Pending workers appear before any service status and filters use backend readiness',async({page})=>{
+  const pending={metadata:{name:'new-worker',namespace:'training-ns'},spec:{clusterRef:'training-1',address:'192.168.3.30',shims:['cri'],maxExecutors:6,pythonVersion:'3.12',manageObjectCache:true},readiness:'Pending'};
+  const disabled={...inventory.nodes[0],metadata:{name:'disabled-worker',namespace:'training-ns'},spec:{...inventory.nodes[0].spec,disabled:true},readiness:'Disabled'};
+  const stale={...inventory.nodes[0],metadata:{name:'stale-worker',namespace:'training-ns',generation:2},readiness:'Not ready'};
+  await fixture(page,{inventories:{training:{...inventory,nodes:[pending,inventory.nodes[0],disabled,stale]}}});await page.goto('/#/nodes');
+  const pendingRow=page.locator('#content tbody tr').filter({has:page.getByRole('button',{name:'new-worker',exact:true})});
+  await expect(pendingRow.locator('td')).toHaveText(['new-worker','Pending','192.168.3.30','—','—','CRI','6','—']);
+  await expect(page.locator('#status-filter option')).toHaveText(['All states','Pending','Ready','Not ready','Disabled','Deleting']);
+  await pendingRow.getByRole('button').click();
+  const drawer=page.getByRole('dialog');
+  await expect(drawer).toContainText('Worker status has not been reported yet.');
+  await expect(drawer).toContainText('training-ns');
+  await expect(drawer).toContainText('192.168.3.30');
+  await expect(drawer).not.toContainText(/CPU|Memory|GPU|Invalid Date/);
+  await expect(drawer.getByText('0',{exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'Close details'}).click();
+  for(const [readiness,name] of [['Disabled','disabled-worker'],['Not ready','stale-worker'],['Ready','flm-worker-01'],['Pending','new-worker']]) {
+    const requested=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('nodes')&&new URL(request.url()).searchParams.get('state')===readiness);
+    await page.getByLabel('Filter by status').selectOption(readiness);await requested;
+    await expect(page.locator('#content tbody tr')).toHaveCount(1);
+    await expect(page.locator('#content tbody tr')).toContainText(name);
+    await expect(page.locator('#content .readiness')).toHaveText(readiness);
+  }
+});
+test('switching namespaces shows each FlameWorker address, runtime, and executor limit',async({page})=>{
+  await fixture(page,multiple);await page.goto('/#/nodes');
+  await expect(page.locator('#content tbody td').nth(2)).toHaveText('192.168.3.8');
+  await expect(page.locator('#content tbody td').nth(6)).toHaveText('10');
+  await expect(page.locator('#content tbody td').nth(7)).not.toHaveText('—');
+  await expect(page.locator('#content')).not.toContainText('Invalid Date');
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+  await expect(page.locator('#content tbody td').nth(2)).toHaveText('192.168.3.20');
+  await expect(page.locator('#content tbody td').nth(5)).toHaveText('CRI');
+  await expect(page.locator('#content tbody td').nth(6)).toHaveText('24');
+  await page.getByRole('button',{name:/prod-worker/}).click();
+  await expect(page.getByRole('dialog')).toContainText('production-ns');
+  await expect(page.getByRole('dialog')).toContainText('production-1');
+  await expect(page.getByRole('dialog')).not.toContainText('training-ns');
+});
+test('empty Nodes explains enrollment without requiring an FLM registration',async({page})=>{
+  await fixture(page,{inventories:{training:{...inventory,nodes:[]}}});await page.goto('/#/nodes');
+  await expect(page.getByRole('heading',{name:'No nodes yet'})).toBeVisible();
+  await expect(page.locator('#content')).toContainText('Nodes appear here when they enroll.');
+  await expect(page.locator('#content')).toContainText('Open Settings for the node join command.');
 });

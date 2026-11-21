@@ -59,7 +59,14 @@ const badge = label => {
   return `<span class="badge ${tone}">${e(label)}</span>`;
 };
 const readiness = label => `<span class="readiness"><span class="ready-circle ${label === 'Ready' ? 'good' : label === 'Not ready' ? 'bad' : ''}" aria-hidden="true"></span>${e(label)}</span>`;
-const date = value => value ? new Date(Number(value)).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const date = value => {
+  if (!value) return '—';
+  const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
+  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
+const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
+const cacheState = row => row.spec?.manageObjectCache === false ? 'Not managed' : row.status?.objectCache?.activeState;
 const empty = (title, description, kind = state.view) => `<div class="empty">${icon(kind)}<h3>${e(title)}</h3><p>${e(description)}</p></div>`;
 function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th scope="col">${e(header)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`; }
 function resourceLink(row, index, subtitle = '', kind = state.view) {
@@ -216,7 +223,7 @@ function render() {
     $('#content').innerHTML = empty(errors.length ? 'Unable to load data' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Live data will appear here shortly.'); return;
   }
   if (!rows.length) {
-    $('#content').innerHTML = empty(state.filter ? 'No matching resources' : `No ${state.view} yet`, state.filter ? 'Try a different state filter.' : 'Resources will appear here when they are registered with Flame.'); return;
+    $('#content').innerHTML = empty(state.filter ? 'No matching resources' : `No ${state.view} yet`, state.filter ? 'Try a different state filter.' : state.view === 'nodes' ? 'Nodes appear here when they enroll. Open Settings for the node join command.' : 'Resources will appear here when they are registered with Flame.'); return;
   }
   const displayed = rows;
   if (state.view === 'applications') {
@@ -224,11 +231,9 @@ function render() {
   } else if (state.view === 'sessions') {
     $('#content').innerHTML = table(['Session', 'State', 'Application', 'Task progress', 'Created', 'Actions'], displayed.map((row, i) => `<tr><td>${resourceLink(row, i)}</td><td>${badge(stateOf(row, 'sessions'))}</td><td>${e(row.spec?.application)}</td><td>${sessionProgress(row.status)}</td><td>${date(row.status?.creation_time)}</td><td>${sessionActions(row, i)}</td></tr>`));
   } else if (state.view === 'nodes') {
-    $('#content').innerHTML = table(['Node', 'Ready', 'CPU capacity', 'Memory', 'GPU', 'Allocatable CPU', 'System', 'Heartbeat', ''], displayed.map((row, i) => {
-      const available = row.status?.allocatable?.cpu;
-      const cpu = n(row.status?.capacity?.cpu);
-      return `<tr><td>${resourceLink(row, i, row.spec?.hostname !== nameOf(row) ? row.spec?.hostname : row.status?.info?.arch)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${cpu} <span class="dim">cores</span></td><td>${bytes(row.status?.capacity?.memory)}</td><td>${row.status?.capacity ? f(row.status.capacity.gpu) : '—'}</td><td><div class="allocation"><div class="progress-track"><span style="width:${cpu ? Math.min(100, n(available) / cpu * 100) : 0}%"></span></div><span>${available ?? '—'} <span class="dim">/ ${cpu}</span></span></div></td><td>${e(row.status?.info?.os)}<span class="secondary">${e(row.status?.info?.arch)}</span></td><td>${date(n(row.status?.last_heartbeat_time) * 1000)}</td><td class="chevron">›</td></tr>`;
-    }));
+    $('#content').innerHTML = table(['Node', 'Status', 'Address', 'FEM', 'Cache', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
+      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : row.spec?.clusterRef)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${e(row.spec?.address)}</td><td>${e(row.status?.fem?.activeState)}</td><td>${e(cacheState(row))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
+    ));
   } else {
     $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));
   }
@@ -298,11 +303,10 @@ function openDetails(row) {
     detail += '<div class="drawer-section"><h3>Command</h3></div><pre>' + e([row.spec?.command, ...(row.spec?.arguments || [])].filter(Boolean).join(' ')) + '</pre>';
     if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
   } else if (state.view === 'nodes') {
-    const info = row.status?.info || {};
-    detail += properties([['Hostname', row.spec?.hostname], ['Operating system', info.os_image || info.os], ['Architecture', info.arch], ['Kernel', info.kernel_version], ['CPU capacity', `${n(row.status?.capacity?.cpu)} cores`], ['Memory capacity', bytes(row.status?.capacity?.memory)], ['GPUs', n(row.status?.capacity?.gpu)], ['Heartbeat', date(n(row.status?.last_heartbeat_time) * 1000)], ['Runtimes', row.spec?.shims?.map(shim).join(', ')]]);
-    detail += '<div class="drawer-section"><h3>Network addresses</h3></div>' + table(['Type', 'Address'], (row.status?.addresses || []).map(a => `<tr><td>${e(a.type)}</td><td class="mono">${e(a.address)}</td></tr>`));
-    if (info.pci_devices?.length) detail += '<div class="drawer-section"><h3>PCI devices</h3></div>' + table(['Address', 'Vendor / Device', 'Driver'], info.pci_devices.map(p => `<tr><td class="mono">${e(p.address)}</td><td class="mono">${e(p.vendor_id)} / ${e(p.device_id)}</td><td>${e(p.driver)}</td></tr>`));
-    detail += '<p class="detail-note">Capacity and allocatable CPU are reported by Flame, not measured CPU utilization.</p>';
+    detail += properties([['Namespace', row.metadata?.namespace], ['Cluster', row.spec?.clusterRef], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash], ['Observed generation', row.status?.observedGeneration]]);
+    detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['FEM', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(report?.activeState)}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
+    if (row.status?.conditions?.length) detail += '<div class="drawer-section"><h3>Conditions</h3></div>' + table(['Condition', 'Status', 'Reason', 'Message'], row.status.conditions.map(condition => `<tr><td>${e(condition.type)}</td><td>${e(condition.status)}</td><td>${e(condition.reason)}</td><td>${e(condition.message)}</td></tr>`));
+    if (!row.status || !Object.keys(row.status).length) detail += '<p class="detail-note">Worker status has not been reported yet.</p>';
   } else if (state.view === 'executors') {
     detail += properties([['Node', row.spec?.node], ['Application', row.spec?.application], ['Session', row.status?.session_id], ['Runtime', shim(row.spec?.shim)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)], ['GPU request', n(row.spec?.resreq?.gpu)]]);
   } else {

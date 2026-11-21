@@ -265,10 +265,14 @@ impl AppState {
         kube_client: Option<kube::Client>,
     ) -> Result<Self, ConfigError> {
         config.validate()?;
-        if (config.join_secret.is_some() || config.client_config_secret.is_some())
+        if (config.namespace.is_some()
+            || config.join_secret.is_some()
+            || config.client_config_secret.is_some())
             && kube_client.is_none()
         {
-            return Err("a Kubernetes client is required for the configured Secret sources".into());
+            return Err(
+                "a Kubernetes client is required for configured worker and Secret sources".into(),
+            );
         }
         let mut endpoint = Endpoint::from_shared(config.endpoint.clone())?
             .connect_timeout(Duration::from_secs(3))

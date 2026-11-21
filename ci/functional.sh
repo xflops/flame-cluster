@@ -23,7 +23,7 @@ bash ci/test-namespace-isolation.sh "$runtime"
 node_ip="$(kubectl get nodes -o json | jq -r '[.items[0].status.addresses[]|select(.type=="InternalIP")|.address][0]')"
 for attempt in {1..60}; do
   get '/api/nodes?pageSize=100&state=Ready' > "$runtime/nodes.json"
-  if jq -e --arg worker "$worker" '.total>=1 and any(.items[]; (.metadata.name==$worker or .spec.hostname==$worker) and .status.state==1)' "$runtime/nodes.json" >/dev/null; then break; fi
+  if jq -e --arg worker "$worker" --arg namespace "$flame_namespace" --arg flame "$flame_name" '.total>=1 and any(.items[]; .metadata.name==$worker and .metadata.namespace==$namespace and .spec.clusterRef==$flame and .status.hostname==$worker and .readiness=="Ready")' "$runtime/nodes.json" >/dev/null; then break; fi
   [[ "$attempt" != 60 ]] || { cat "$runtime/nodes.json" >&2; exit 1; }
   sleep 1
 done
@@ -255,7 +255,7 @@ get '/api/applications?pageSize=100' | jq -e 'any(.items[]; .metadata.name=="fla
 # Verify real host idempotence, rolling configuration and credential revocation.
 bash ci/test-flmlet.sh "$runtime"
 
-# Management may read exact enrollment and client-bundle Secrets, without discovery or writes.
+# Management reads namespaced worker inventory and exact credential Secrets, without writes or namespace discovery.
 "${management_kube[@]}" get deployment cluster -o json | jq -e '.spec.template.spec.serviceAccountName=="cluster" and .spec.template.spec.automountServiceAccountToken==true' >/dev/null
 [[ "$(kubectl auth can-i get secret/flame-1-join --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster)" == yes ]]
 [[ "$(kubectl auth can-i get secret/flame-2-join --namespace flame-ns-2 --as system:serviceaccount:flame-system:cluster)" == yes ]]
@@ -265,6 +265,14 @@ bash ci/test-flmlet.sh "$runtime"
 [[ "$(kubectl auth can-i get secret/flame-1-control-plane-tls --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
 [[ "$(kubectl auth can-i patch secret/flame-1-client --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
 [[ "$(kubectl auth can-i list secrets --namespace flame-ns-1 --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+for namespace in flame-ns-1 flame-ns-2; do
+  [[ "$(kubectl auth can-i list flameworkers.flame.xflops.io --namespace "$namespace" --as system:serviceaccount:flame-system:cluster)" == yes ]]
+  [[ "$(kubectl auth can-i get flameworkers.flame.xflops.io --namespace "$namespace" --as system:serviceaccount:flame-system:cluster)" == yes ]]
+  [[ "$(kubectl auth can-i patch flameworkers.flame.xflops.io --namespace "$namespace" --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+done
+[[ "$(kubectl auth can-i list flameworkers.flame.xflops.io --namespace flame-system --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+[[ "$(kubectl auth can-i list flameworkers.flame.xflops.io --all-namespaces --as system:serviceaccount:flame-system:cluster || true)" == no ]]
+
 python3 - "$runtime" <<'PY'
 import json,sys
 from pathlib import Path

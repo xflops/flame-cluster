@@ -107,7 +107,8 @@ certificate lifetime is one year (`8760h`), renewing 30 days (`720h`) before
 expiry. The issuer must allow that lifetime. Mounted bundles follow renewal;
 exported copies need a separate refresh before expiry.
 
-The management API gets only `get` on each configured namespace's exact
+The management API gets `get`/`list` on FlameWorkers in each configured
+namespace, and `get` on that namespace's exact
 `<flame-name>-join` and `<flame-name>-client` Secrets. The first supplies join
 commands; the second supplies the selected `flame.yaml` download. It cannot list
 or modify Secrets, or read unrelated TLS server credentials. Its ordered
@@ -120,7 +121,15 @@ end users or implement tenant authorization.
 Open `http://<kubeconfig-server-ip>/`. The selector shows namespaces only, such
 as `flame-ns-1` and `flame-ns-2`. `/` opens the first configured Flame directly.
 Selecting another namespace switches resources, session actions, join
-credentials, and client downloads together. There is no aggregate page or All clusters option.
+credentials, and client downloads together.
+
+Nodes reads FlameWorker resources in the selected namespace, filtered by the
+selected Flame's `spec.clusterRef`. It shows the worker's identity, declared
+address, and reported status even before FLM registration. Readiness is Pending,
+Ready, Not ready, Disabled, or Deleting; no FLM node fallback or invented machine
+capacity is used. Applications, sessions, executors, and tasks still read the
+selected FLM. Worker-list failures are reported as errors, not healthy empty
+inventories. There is no aggregate page or All clusters option.
 
 Compact density is the default. Navigation is Nodes → Executors → Applications
 → Sessions → Settings. Settings shows the selected connection and its current
@@ -141,8 +150,9 @@ Secret entries. The management API does not discover or accept arbitrary Secret
 names from the download request.
 
 The UI proxies to `cluster.<management-namespace>.svc:3000`. The backend talks
-to each FLM through its in-cluster session-manager Service, not through Tailscale
-or a NodePort. Tailscale may carry browser and administrative access to k3s.
+to each FLM through its in-cluster session-manager Service for workload
+resources; Nodes uses the namespace-scoped Kubernetes FlameWorker API. Neither
+path requires Tailscale or a NodePort for in-cluster reads. Tailscale may carry browser and administrative access to k3s.
 
 Setup configures the UI Service's `service.externalIPs` and
 `cluster.security.allowedHosts` from the kubeconfig endpoint together. For manual

@@ -53,7 +53,6 @@ fn states(resource: &str) -> Option<&'static [&'static str]> {
     match resource {
         "applications" => Some(&["Enabled", "Disabled"]),
         "sessions" => Some(&["Open", "Closed", "Suspending", "Suspended"]),
-        "nodes" => Some(&["Unknown", "Ready", "Not ready"]),
         "executors" => Some(&[
             "Unknown",
             "Void",
@@ -112,7 +111,6 @@ pub(crate) async fn read_resource(
         }};
     }
     Ok(match resource {
-        "nodes" => fetch!(list_nodes, ListNodesRequest, nodes),
         "applications" => fetch!(list_applications, ListApplicationsRequest, applications),
         "sessions" => fetch!(list_sessions, ListSessionsRequest, sessions),
         "executors" => fetch!(list_executors, ListExecutorsRequest, executors),

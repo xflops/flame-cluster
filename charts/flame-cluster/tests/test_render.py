@@ -68,6 +68,7 @@ class Render(unittest.TestCase):
             name = connection['id']
             self.assertEqual(connection['endpoint'], f'https://{name}-session-manager.{connection["namespace"]}.svc:8080')
             self.assertEqual(connection['caFile'], f'/etc/flame/connections/{name}/ca.crt')
+            self.assertEqual(connection['name'], name)
             self.assertEqual(connection['joinNamespace'], connection['namespace'])
             self.assertEqual(connection['joinSecret'], f'{name}-join')
             self.assertEqual(connection['clientConfigSecret'], f'{name}-client')
@@ -92,10 +93,14 @@ class Render(unittest.TestCase):
         self.assertEqual(rbac.count('kind: Role\n'), 4) # Role resources and RoleBinding roleRef.
         self.assertEqual(rbac.count('    verbs: [get]'), 2)
         self.assertEqual(rbac.count('    resources: [secrets]'), 2)
+        self.assertEqual(rbac.count('  - apiGroups: [flame.xflops.io]'), 2)
+        self.assertEqual(rbac.count('    resources: [flameworkers]'), 2)
+        self.assertEqual(rbac.count('    verbs: [get, list]'), 2)
+        self.assertCountEqual(re.findall(r'^  namespace: (.+)$', rbac, re.M), ['team-a', 'flame-ns-1', 'flame-ns-1', 'custom-flame-ns', 'custom-flame-ns'])
         self.assertEqual(rbac.count('    namespace: team-a'), 2)
         for name in ['flame-1', 'flame-2']:
             self.assertIn(f'resourceNames: ["{name}-join", "{name}-client"]', rbac)
-        for forbidden in ['ClusterRole', 'verbs: [list]', 'create', 'update', 'delete', '*', '-control-plane-tls']:
+        for forbidden in ['ClusterRole', 'verbs: [list]', 'create', 'update', 'delete', 'watch', '*', '-control-plane-tls']:
             self.assertNotIn(forbidden, rbac)
         values['flames'][0]['namespace'] = 'custom-flame-ns'
         failure = render(values, check=False)

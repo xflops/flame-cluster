@@ -29,8 +29,9 @@ also show total GPU, CPU, and memory capacity separately from current usage,
 and list PCI devices detected by flmlet. Unreported values display `-`.
 
 Session details show scheduling limits, batch size, and resource requests.
-Events from the selected Flame appear newest first with time,
-code, and message. Use **Refresh events** to reload them independently of tasks.
+Events appear newest first with time, code, and message. Opening the drawer,
+refreshing details, and paging tasks all use the selected Flame’s session
+detail endpoint.
 
 Settings separates full session-manager configuration, the client download,
 and node enrollment into three cards. The configuration card displays

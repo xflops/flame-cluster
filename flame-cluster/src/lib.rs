@@ -2,10 +2,10 @@ mod actions;
 mod client_config;
 mod configuration;
 pub mod connection;
-mod events;
 mod join;
 mod listing;
 mod nodes;
+mod sessions;
 
 pub mod rpc {
     tonic::include_proto!("flame.v1");
@@ -56,7 +56,7 @@ fn resource_routes() -> Router<AppState> {
         .route("/nodes", get(nodes::list))
         .route("/{resource}", get(listing::resources))
         .route("/sessions/{id}/tasks", get(listing::tasks))
-        .route("/sessions/{id}/events", get(events::list))
+        .route("/sessions/{id}", get(sessions::detail))
         .route("/sessions/{id}/actions/{action}", post(actions::action))
 }
 

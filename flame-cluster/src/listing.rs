@@ -40,6 +40,13 @@ pub(crate) fn validate_session_id(id: &str) -> Result<(), ApiError> {
     }
     Ok(())
 }
+pub(crate) fn validate_task_query(query: &PageQuery) -> Result<usize, ApiError> {
+    let offset = query.offset()?;
+    if !query.state.is_empty() {
+        return Err(bad("Task pages do not support state filters yet"));
+    }
+    Ok(offset)
+}
 impl PageQuery {
     pub fn offset(&self) -> Result<usize, ApiError> {
         if !self.search.is_empty() {
@@ -154,10 +161,7 @@ pub(crate) async fn read_task_page(
     id: String,
     query: &PageQuery,
 ) -> Result<Value, ApiError> {
-    let offset = query.offset()?;
-    if !query.state.is_empty() {
-        return Err(bad("Task pages do not support state filters yet"));
-    }
+    let offset = validate_task_query(query)?;
     let requested = rpc::Paging {
         limit: query.page_size as i32,
         number: query.page as i64,
@@ -189,7 +193,7 @@ pub(crate) async fn tasks(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, ApiError> {
     validate_session_id(&id)?;
-    query.offset()?;
+    validate_task_query(&query)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         read_task_page(state.client, id, &query),

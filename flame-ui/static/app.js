@@ -10,7 +10,7 @@ const paths = {
 };
 const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
 const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
-let catalogController, pollController, taskController, eventsController, actionController, downloadController, revision = 0;
+let catalogController, pollController, sessionController, actionController, downloadController, revision = 0;
 const pageSize = 12;
 const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
@@ -66,7 +66,7 @@ async function loadConnections() {
 }
 function selectConnection(id) {
   if (id === state.connectionId || !state.connections?.some(connection => connection.id === id)) return;
-  revision++; pollController?.abort(); taskController?.abort(); eventsController?.abort(); actionController?.abort(); downloadController?.abort();
+  revision++; pollController?.abort(); sessionController?.abort(); actionController?.abort(); downloadController?.abort();
   pageCache.clear();
   Object.assign(state, {connectionId: id, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
   $('#details').close(); $('#detail-content').replaceChildren();
@@ -404,8 +404,7 @@ function queryChanged() {
 }
 const properties = rows => `<dl class="properties">${rows.map(([label, value]) => `<dt>${e(label)}</dt><dd>${e(value)}</dd>`).join('')}</dl>`;
 function openDetails(row) {
-  taskController?.abort();
-  eventsController?.abort();
+  sessionController?.abort();
   state.drawer = row;
   $('#detail-title').textContent = nameOf(row);
   $('#detail-kind').textContent = state.view.slice(0, -1).toUpperCase();
@@ -448,80 +447,75 @@ function openDetails(row) {
   } else if (state.view === 'executors') {
     detail += properties([['Node', row.spec?.node], ['Application', row.spec?.application], ['Session', row.status?.session_id], ['Runtime', shim(row.spec?.shim)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)], ['GPU request', n(row.spec?.resreq?.gpu)]]);
   } else {
-    const spec = row.spec;
-    const resources = spec?.resreq;
-    detail += properties([['Application', spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)]]);
-    detail += '<section aria-label="Scheduling"><div class="drawer-section"><h3>Scheduling</h3></div>' + properties([
-      ['Priority', spec ? n(spec.priority) : '-'],
-      ['Minimum instances', spec ? n(spec.min_instances) : '-'],
-      ['Maximum instances', spec ? spec.max_instances ?? 'Unlimited' : '-'],
-      ['Batch size', spec ? n(spec.batch_size) || 1 : '-'],
-      ...(resources ? [
-        ['GPU request', n(resources.gpu)],
-        ['CPU request', n(resources.cpu)],
-        ['Memory request', bytes(resources.memory)],
-      ] : [['Resource request', spec ? 'Cluster default' : '-']]),
-    ]) + '</section>';
-    detail += `${sessionProgress(row.status, true)}<div class="drawer-section"><h3>Tasks</h3><button class="button small" id="refresh-tasks">Refresh tasks</button></div><div id="tasks"></div>`;
-    detail += '<section aria-label="Session events"><div class="drawer-section"><h3>Events</h3><button class="button small" id="refresh-events">Refresh events</button></div><div id="events" aria-live="polite"></div></section>';
+    detail = `<div id="session-summary">${sessionSummary(row)}</div><div class="drawer-section"><h3>Tasks</h3><button class="button small" id="refresh-session">Refresh details</button></div><p id="session-note" role="status"></p><div id="tasks"></div><section aria-label="Session events"><div class="drawer-section"><h3>Events</h3></div><div id="events"></div></section>`;
   }
   $('#detail-content').innerHTML = detail;
   if (!$('#details').open) $('#details').showModal();
   if (state.view === 'sessions') {
-    $('#refresh-tasks').addEventListener('click', () => loadTasks(row));
-    $('#refresh-events').addEventListener('click', () => loadSessionEvents(row));
-    loadTasks(row);
-    loadSessionEvents(row);
+    $('#refresh-session').addEventListener('click', () => loadSession(row));
+    loadSession(row);
   }
 }
-async function loadSessionEvents(row) {
-  eventsController?.abort();
+
+function sessionSummary(row) {
+  const spec = row.spec;
+  const resources = spec?.resreq;
+  let detail = badge(stateOf(row, 'sessions')) + properties([['Application', spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)]]);
+  detail += '<section aria-label="Scheduling"><div class="drawer-section"><h3>Scheduling</h3></div>' + properties([
+    ['Priority', spec ? n(spec.priority) : '-'],
+    ['Minimum instances', spec ? n(spec.min_instances) : '-'],
+    ['Maximum instances', spec ? spec.max_instances ?? 'Unlimited' : '-'],
+    ['Batch size', spec ? n(spec.batch_size) || 1 : '-'],
+    ...(resources ? [
+      ['GPU request', n(resources.gpu)],
+      ['CPU request', n(resources.cpu)],
+      ['Memory request', bytes(resources.memory)],
+    ] : [['Resource request', spec ? 'Cluster default' : '-']]),
+  ]) + '</section>';
+  return detail + sessionProgress(row.status, true);
+}
+
+async function loadSession(row, page = 1) {
+  sessionController?.abort();
   const controller = new AbortController();
-  eventsController = controller;
-  const target = $('#events');
+  sessionController = controller;
   const current = () => !controller.signal.aborted && state.drawer === row;
-  target.textContent = 'Loading…';
+  const note = $('#session-note');
+  note.hidden = false;
+  note.textContent = 'Loading…';
   try {
-    const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}/events`,
+    const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}?page=${page}&pageSize=${pageSize}`,
       AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]));
     if (!current()) return;
-    const events = data.items.sort((a, b) => n(b.creation_time) - n(a.creation_time));
-    target.innerHTML = events.length ? table(['Time', 'Code', 'Message'], events.map(event =>
+    const events = (data.session.status?.events || []).sort((a, b) => n(b.creation_time) - n(a.creation_time));
+    $('#session-summary').innerHTML = sessionSummary(data.session);
+    $('#events').innerHTML = events.length ? table(['Time', 'Code', 'Message'], events.map(event =>
       `<tr><td>${date(event.creation_time, true)}</td><td>${e(event.code ?? '-')}</td><td>${e(event.message || '-')}</td></tr>`
     )) : '<p class="detail-note">No events yet.</p>';
+    renderTaskPage(row, data.tasks);
+    note.hidden = true;
   } catch {
-    if (current()) target.innerHTML = '<p class="notice">Unable to load events.</p>';
+    if (current()) note.textContent = 'Unable to load session details.';
   }
 }
-async function loadTasks(row, page = 1) {
-  taskController?.abort();
-  taskController = new AbortController();
-  const controller = taskController;
-  const signal = controller.signal;
+
+function renderTaskPage(row, data) {
+  const {page, items: tasks} = data;
   const target = $('#tasks');
-  target.innerHTML = '<div class="empty"><div class="spinner"></div><p>Loading tasks…</p></div>';
-  const timer = setTimeout(() => controller.abort(), 23000);
-  try {
-    const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}/tasks?page=${page}&pageSize=${pageSize}`, signal);
-    if (signal.aborted || state.drawer !== row) return;
-    const tasks = data.items;
-    target.innerHTML = tasks.length ? table(['Task', 'State', 'Created', 'Completed', 'Duration'], tasks.map(task => `
-      <tr>
-        <td class="mono">${e(idOf(task))}</td>
-        <td>${badge(stateOf(task, 'tasks'))}</td>
-        <td>${date(task.status?.creation_time)}</td>
-        <td>${date(task.status?.completion_time)}</td>
-        <td title="Elapsed time from task creation to completion">${e(taskDuration(task.status))}</td>
-      </tr>`)) : empty(page === 1 ? 'No tasks yet' : 'No tasks on this page', page === 1 ? 'Tasks submitted to this session will appear here.' : 'Use Previous tasks to return to an earlier page.', 'sessions');
-    target.insertAdjacentHTML('beforeend', `<div class="pagination task-pagination"><button class="button small" id="tasks-previous" ${page === 1 ? 'disabled' : ''}>← Previous tasks</button><span>Page ${page}</span><button class="button small" id="tasks-next" ${data.hasNext ? '' : 'disabled'}>Next tasks →</button></div>`);
-    $('#tasks-previous').addEventListener('click', () => loadTasks(row, page - 1));
-    $('#tasks-next').addEventListener('click', () => loadTasks(row, page + 1));
-  } catch (error) {
-    if (taskController === controller && state.drawer === row) target.innerHTML = `<div class="notice">${e(error.name === 'AbortError' ? 'Task request timed out. Use Refresh tasks to retry.' : error.message)}</div>`;
-  } finally { clearTimeout(timer); }
+  target.innerHTML = tasks.length ? table(['Task', 'State', 'Created', 'Completed', 'Duration'], tasks.map(task => `
+    <tr>
+      <td class="mono">${e(idOf(task))}</td>
+      <td>${badge(stateOf(task, 'tasks'))}</td>
+      <td>${date(task.status?.creation_time)}</td>
+      <td>${date(task.status?.completion_time)}</td>
+      <td title="Elapsed time from task creation to completion">${e(taskDuration(task.status))}</td>
+    </tr>`)) : empty(page === 1 ? 'No tasks yet' : 'No tasks on this page', page === 1 ? 'Tasks submitted to this session will appear here.' : 'Use Previous tasks to return to an earlier page.', 'sessions');
+  target.insertAdjacentHTML('beforeend', `<div class="pagination task-pagination"><button class="button small" id="tasks-previous" ${page === 1 ? 'disabled' : ''}>← Previous tasks</button><span>Page ${page}</span><button class="button small" id="tasks-next" ${data.hasNext ? '' : 'disabled'}>Next tasks →</button></div>`);
+  $('#tasks-previous').addEventListener('click', () => loadSession(row, page - 1));
+  $('#tasks-next').addEventListener('click', () => loadSession(row, page + 1));
 }
 function route() {
-  revision++; pollController?.abort(); taskController?.abort(); eventsController?.abort(); actionController?.abort(); downloadController?.abort();
+  revision++; pollController?.abort(); sessionController?.abort(); actionController?.abort(); downloadController?.abort();
   state.view = parseRoute(location.hash);
   if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
   Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null, downloading: false, downloadStatus: ''});
@@ -536,7 +530,7 @@ $('#auto-refresh').addEventListener('click', () => { state.auto = !state.auto; r
 $('#previous').addEventListener('click', () => { state.page--; queryChanged(); });
 $('#next').addEventListener('click', () => { state.page++; queryChanged(); });
 $('#close-details').addEventListener('click', () => $('#details').close());
-$('#details').addEventListener('close', () => { state.drawer = null; taskController?.abort(); eventsController?.abort(); });
+$('#details').addEventListener('close', () => { state.drawer = null; sessionController?.abort(); });
 $('#details').addEventListener('click', event => { if (event.target === $('#details') && event.clientX < $('#details').getBoundingClientRect().left) $('#details').close(); });
 window.addEventListener('hashchange', route);
 window.addEventListener('resize', renderNavigation);

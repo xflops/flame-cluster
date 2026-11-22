@@ -32,10 +32,10 @@ impl frontend_server::Frontend for Flame {
             return Ok(GrpcResponse::new(Session {
                 metadata: Some(Metadata {
                     id: id.clone(),
-                    name: "PRIVATE_SESSION_METADATA".into(),
+                    name: "Public session name".into(),
                 }),
                 spec: Some(SessionSpec {
-                    application: "PRIVATE_SPEC_APPLICATION".into(),
+                    application: "flmping".into(),
                     ..Default::default()
                 }),
                 status: Some(SessionStatus {
@@ -239,11 +239,12 @@ impl frontend_server::Frontend for Flame {
         if request.session_id == "secret-error" {
             return Err(Status::internal("SYNTHETIC_SECRET_TASKS"));
         }
-        let count = if request.session_id == "large-session" {
-            1000
-        } else {
-            3
-        };
+        let count =
+            if request.session_id == "large-session" || request.session_id.starts_with("event-") {
+                1000
+            } else {
+                3
+            };
         let mut paging = request.paging.unwrap();
         if request.session_id == "missing-paging" {
             return Ok(GrpcResponse::new(TaskList::default()));
@@ -254,7 +255,14 @@ impl frontend_server::Frontend for Flame {
                 paging: Some(paging),
             }));
         }
-        assert_eq!(paging.limit, 12, "request only the displayed page");
+        if request.session_id.starts_with("event-") {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("page:{}:{}", paging.number, paging.limit));
+        } else {
+            assert_eq!(paging.limit, 12, "request only the displayed page");
+        }
         let offset = (paging.number - 1) * i64::from(paging.limit);
         paging.total = Some(count);
         let tasks = (0..count)
@@ -1772,7 +1780,7 @@ async fn unavailable_or_invalid_configuration_preserves_healthy_connection_metad
 }
 
 #[tokio::test]
-async fn session_events_use_selected_frontend_and_session_without_exposing_session_fields() {
+async fn session_detail_uses_selected_frontend_and_one_native_task_page() {
     use std::sync::{Arc, Mutex};
     let first_calls = Arc::new(Mutex::new(Vec::new()));
     let second_calls = Arc::new(Mutex::new(Vec::new()));
@@ -1787,32 +1795,71 @@ async fn session_events_use_selected_frontend_and_session_without_exposing_sessi
     })
     .await;
     let app = fleet_router(vec![("first".into(), first), ("second".into(), second)]).unwrap();
-    for (uri, message) in [
-        ("/api/sessions/event-one/events", "first:event-one"),
+    for (uri, message, id) in [
         (
-            "/api/connections/second/sessions/event-two/events?connection=first&session=event-one",
+            "/api/sessions/event-one?page=21&pageSize=7",
+            "first:event-one",
+            "event-one",
+        ),
+        (
+            "/api/connections/second/sessions/event-two?page=21&pageSize=7&connection=first&session=event-one",
             "second:event-two",
+            "event-two",
         ),
     ] {
         let (status, data) = get(app.clone(), uri).await;
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(data.as_object().unwrap().len(), 2);
+        assert_eq!(data["session"].as_object().unwrap().len(), 3);
+        assert_eq!(data["session"]["metadata"]["id"], id);
+        assert_eq!(data["session"]["spec"]["application"], "flmping");
         assert_eq!(
-            data,
-            json!({"items":[{"code":42,"message":message,"creation_time":1795000000000_i64}]})
+            data["session"]["status"]["events"],
+            json!([{"code":42,"message":message,"creation_time":1795000000000_i64}])
         );
-        assert!(!data.to_string().contains("PRIVATE"));
+        assert!(data["session"]["spec"].get("common_data").is_none());
+        assert!(data["session"].get("token").is_none());
+        let tasks = &data["tasks"];
+        assert_eq!(tasks["page"], 21);
+        assert_eq!(tasks["pageSize"], 7);
+        assert_eq!(tasks["total"], 1000);
+        assert_eq!(tasks["hasNext"], true);
+        assert!(tasks["observedAt"].is_string());
+        let items = tasks["items"].as_array().unwrap();
+        assert_eq!(items.len(), 7);
+        assert_eq!(items[0]["metadata"]["id"], "859");
+        assert_eq!(items[6]["metadata"]["id"], "853");
+        for task in items {
+            assert_eq!(task.as_object().unwrap().len(), 3);
+            assert_eq!(
+                task["spec"].as_object().unwrap().keys().collect::<Vec<_>>(),
+                ["session_id"]
+            );
+            assert!(task.get("input").is_none());
+            assert!(task.get("output").is_none());
+        }
     }
-    assert_eq!(first_calls.lock().unwrap().as_slice(), ["get:event-one"]);
-    assert_eq!(second_calls.lock().unwrap().as_slice(), ["get:event-two"]);
-    let (status, empty) = get(app, "/api/connections/second/sessions/event-empty/events").await;
+    assert_eq!(
+        first_calls.lock().unwrap().as_slice(),
+        ["get:event-one", "tasks:event-one", "page:21:7"]
+    );
+    assert_eq!(
+        second_calls.lock().unwrap().as_slice(),
+        ["get:event-two", "tasks:event-two", "page:21:7"]
+    );
+    let (status, empty) = get(app.clone(), "/api/connections/second/sessions/event-empty").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(empty, json!({"items":[]}));
+    assert_eq!(empty["session"]["status"]["events"], json!([]));
+    assert_eq!(
+        get(app, "/api/sessions/event-one/events").await.0,
+        StatusCode::NOT_FOUND
+    );
     let _ = stop_first.send(());
     let _ = stop_second.send(());
 }
 
 #[tokio::test]
-async fn session_event_failures_are_generic_and_invalid_ids_never_reach_frontend() {
+async fn session_detail_failures_are_generic_and_invalid_requests_never_reach_frontend() {
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let (state, stop) = frontend(Flame {
         name_prefix: String::new(),
@@ -1824,21 +1871,41 @@ async fn session_event_failures_are_generic_and_invalid_ids_never_reach_frontend
         ("event-missing", StatusCode::NOT_FOUND),
         ("event-failed", StatusCode::BAD_GATEWAY),
     ] {
-        let (status, error) = get(app.clone(), &format!("/api/sessions/{id}/events")).await;
+        let (status, error) = get(app.clone(), &format!("/api/sessions/{id}")).await;
         assert_eq!(status, expected);
         assert_eq!(
             error,
-            json!({"error":"Session events are unavailable. Refresh and retry."})
+            json!({"error":"Session details are unavailable. Refresh and retry."})
         );
     }
     for id in ["event-%0Ainvalid".to_owned(), "x".repeat(257)] {
-        let (status, error) = get(app.clone(), &format!("/api/sessions/{id}/events")).await;
+        let (status, error) = get(app.clone(), &format!("/api/sessions/{id}")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(error, json!({"error":"Invalid session ID"}));
+    }
+    for query in [
+        "page=0",
+        "pageSize=101",
+        "pageSize=0",
+        "page=1000001&pageSize=2",
+        "state=Open",
+        "search=word",
+    ] {
+        assert_eq!(
+            get(app.clone(), &format!("/api/sessions/event-one?{query}"))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
     }
     assert_eq!(
         calls.lock().unwrap().as_slice(),
         ["get:event-missing", "get:event-failed"]
     );
+    for id in ["secret-error", "missing-paging", "missing-total"] {
+        let (status, error) = get(app.clone(), &format!("/api/sessions/{id}")).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(error, json!({"error":"Flame upstream request failed"}));
+    }
     let _ = stop.send(());
 }

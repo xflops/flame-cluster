@@ -161,12 +161,14 @@ test.describe('live Flame deployment', () => {
     await expect(row).toContainText('4 / 4 completed');
     await expect(row.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
     const connectionID = await page.getByRole('combobox', {name:'Cluster', exact:true}).inputValue();
-    const taskPath = `/api/connections/${encodeURIComponent(connectionID)}/sessions/${encodeURIComponent(completedSession)}/tasks`;
-    const loaded = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === taskPath);
+    const detailPath = `/api/connections/${encodeURIComponent(connectionID)}/sessions/${encodeURIComponent(completedSession)}`;
+    const loaded = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === detailPath);
     await row.getByRole('button', { name: completedSession, exact: true }).click();
     const response = await loaded;
     expect(response.ok()).toBe(true);
-    const tasks = await response.json();
+    const {session: detail, tasks} = await response.json();
+    expect(detail.metadata.id).toBe(completedSession);
+    expect(detail.status.events).toEqual(expect.any(Array));
     expect(tasks.total).toBe(4);
     expect(tasks.items).toHaveLength(4);
     expect(tasks.hasNext).toBe(false);

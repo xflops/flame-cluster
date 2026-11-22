@@ -171,7 +171,7 @@ spec:
                 type: integer
               pciDevices:
                 items:
-                  description: A PCI device reported by the executor manager in the native node inventory.
+                  description: A PCI device detected by flmlet on the worker host.
                   properties:
                     address:
                       type: string

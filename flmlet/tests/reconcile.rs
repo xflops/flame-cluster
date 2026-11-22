@@ -1349,27 +1349,49 @@ fn native_flat_node_capacity_matches_observed_flmctl_output() {
 }
 
 #[test]
-fn pci_inventory_reports_only_matching_ready_host_and_distinguishes_unavailable() {
+fn pci_inventory_comes_from_local_sysfs_without_registration() {
     let mut host = FakeHost::healthy();
-    let device = json!({
-        "address":"0000:03:00.0", "vendor_id":"10de", "device_id":"1234",
-        "class_id":"030000", "driver":"vfio-pci", "numa_node":0
-    });
-    host.registration = json!([
-        {"hostname":"another-host","state":"Ready","pci_devices":[device]},
-        {"hostname":"actual-host","state":"Ready"}
-    ]);
-    for inventory in [None, Some(json!([])), Some(json!([device.clone()]))] {
-        if let Some(devices) = &inventory {
-            host.registration[1]["pci_devices"] = devices.clone();
-        }
-        let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
-        assert!(outcome.ready);
-        let reported = outcome.status.unwrap().pci_devices;
-        assert_eq!(reported.map(|devices| json!(devices)), inventory);
+    host.registration = json!([{
+        "hostname":"another-host", "state":"Ready",
+        "pci_devices":[{"address":"0000:99:00.0"}]
+    }]);
+    let report = |host: &mut FakeHost| {
+        let outcome = run(host, &settings(), &worker(), &cluster()).unwrap();
+        assert!(!outcome.ready);
+        outcome.status.unwrap().pci_devices
+    };
+    assert_eq!(report(&mut host), None);
+
+    let directory = PathBuf::from("/sys/bus/pci/devices");
+    host.files.insert(directory.clone(), vec![]);
+    assert_eq!(report(&mut host), Some(vec![]));
+
+    let device = directory.join("0000:03:00.0");
+    host.files.insert(device.clone(), vec![]);
+    for (name, value) in [
+        ("vendor", "0x10DE"),
+        ("device", "0x1234"),
+        ("class", "0x030000"),
+        ("uevent", "DRIVER=vfio-pci\nPCI_SLOT_NAME=0000:03:00.0\n"),
+        ("numa_node", "0\n"),
+    ] {
+        host.files
+            .insert(device.join(name), value.as_bytes().to_vec());
     }
-    host.registration[1]["state"] = json!("NotReady");
-    let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
-    assert!(!outcome.ready);
-    assert!(outcome.status.unwrap().pci_devices.is_none());
+    // A disappearing device cannot invalidate the rest of the inventory.
+    host.files.insert(directory.join("0000:04:00.0"), vec![]);
+    assert_eq!(
+        report(&mut host),
+        Some(vec![flame_api::NodePciDevice {
+            address: "0000:03:00.0".into(),
+            vendor_id: "10de".into(),
+            device_id: "1234".into(),
+            class_id: "030000".into(),
+            driver: Some("vfio-pci".into()),
+            numa_node: Some(0),
+        }])
+    );
+    host.files
+        .insert(device.join("numa_node"), b"-1\n".to_vec());
+    assert_eq!(report(&mut host).unwrap()[0].numa_node, None);
 }

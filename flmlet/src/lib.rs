@@ -14,6 +14,7 @@ use std::{
 };
 
 pub mod host;
+mod pci;
 
 pub const FEM: &str = "flame-executor-manager.service";
 pub const FOC: &str = "flame-object-cache.service";
@@ -489,11 +490,11 @@ fn node_capacity(node: &Value) -> Option<NodeCapacity> {
     };
     (result.cpu.is_some() || result.gpu.is_some() || result.memory.is_some()).then_some(result)
 }
-fn registered_inventory_node(
+fn registration(
     host: &mut impl Host,
     settings: &Settings,
     hostname: &str,
-) -> Result<Option<Value>> {
+) -> Result<(bool, Option<NodeCapacity>)> {
     let config = settings.conf("flmlet-client.yaml");
     let config = config
         .to_str()
@@ -510,11 +511,11 @@ fn registered_inventory_node(
             ],
         )?;
         if !result.success {
-            return Ok(None);
+            return Ok((false, None));
         }
         let data: Value = serde_json::from_str(&result.stdout)?;
         if let Some(node) = registered_node(&data, hostname) {
-            return Ok(Some(node.clone()));
+            return Ok((true, node_capacity(node)));
         }
         let rows = data
             .get("items")
@@ -524,10 +525,10 @@ fn registered_inventory_node(
                 Error::Invalid("flmctl node listing must contain an inventory array".into())
             })?;
         if rows.len() < 100 {
-            return Ok(None);
+            return Ok((false, None));
         }
     }
-    Ok(None)
+    Ok((false, None))
 }
 
 #[derive(Debug)]
@@ -1020,6 +1021,7 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
                 "Worker is disabled or deleting; owned services are stopped",
             ),
             fem: service(host, FEM),
+            pci_devices: pci::inventory(host),
             object_cache: worker.spec.manage_object_cache.then(|| service(host, FOC)),
             ..Default::default()
         };
@@ -1055,12 +1057,8 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
     };
     let fem = ensure_active(host, FEM)?;
     let hostname = host.hostname()?;
-    let node = registered_inventory_node(host, settings, &hostname)?;
-    let registered = node.is_some();
-    let capacity = node.as_ref().and_then(node_capacity);
-    let pci_devices = node
-        .and_then(|mut node| node.as_object_mut()?.remove("pci_devices"))
-        .and_then(|devices| serde_json::from_value(devices).ok());
+    let (registered, capacity) = registration(host, settings, &hostname)?;
+    let pci_devices = pci::inventory(host);
     let address = std::net::SocketAddrV4::new(
         validation::lan_ipv4(&worker.spec.address)?,
         worker.spec.cache_port,

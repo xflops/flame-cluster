@@ -253,7 +253,7 @@ pub struct NodeCapacity {
     pub memory: Option<u64>,
 }
 
-/// A PCI device reported by the executor manager in the native node inventory.
+/// A PCI device detected by flmlet on the worker host.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct NodePciDevice {
     pub address: String,

@@ -82,8 +82,8 @@ test('dashboard sums reported capacity across pages and keeps cluster usage sepa
   const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===scoped('nodes'))reads.push(url.searchParams.get('page'))});
   await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
   await expect(page.getByRole('img',{name:'Nodes: 100 ready, 1 not ready, 101 total'})).toBeVisible();expect(reads).toEqual(['1','2']);
-  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['25%','25%','0%']);
-  await expect(page.getByRole('region',{name:'Memory usage'})).toContainText('4 GiB / 16 GiB · Reporting 2/101 nodes');
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['25%','4 GiB / 16 GiB','0%']);
+  await expect(page.getByRole('region',{name:'Memory usage'})).toContainText('Used / total · Reporting 2/101 nodes');
   await expect(page.getByRole('region',{name:'GPU usage'})).toContainText('1 reporting GPU · Reporting 1/101 nodes');
   await expect(page.getByRole('region',{name:'Current usage'}).getByRole('row')).toHaveCount(0);
   await expect(page.locator('.dashboard-summary .dashboard-capacity .metric-value')).toHaveText(['0','24','4 GiB']);
@@ -115,7 +115,7 @@ test('dashboard refreshes current readings and refuses incomplete inventories',a
   await expect(page.locator('#notice')).toContainText('incomplete');await expect(page.locator('#notice')).toContainText('last successful data');
   await expect(cpuUsage(page)).toHaveText('12%');
 });
-test('cluster usage averages CPU and GPU samples and weights memory by bytes',async({page})=>{
+test('cluster usage averages CPU and GPU samples and sums memory bytes',async({page})=>{
   const now=Date.parse('2030-01-01T00:00:00Z'),gib=1024**3;await page.clock.install({time:new Date(now)});
   const node=(name,readiness,age,usage)=>({metadata:{name},readiness,status:{lastHeartbeatTime:new Date(now-age).toISOString(),usage}});
   const nodes=[node('zero','Ready',0,{cpuPercent:0,memory:{usedBytes:gib,totalBytes:8*gib},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]}),
@@ -124,7 +124,7 @@ test('cluster usage averages CPU and GPU samples and weights memory by bytes',as
     node('invalid','Ready',0,{cpuPercent:101,memory:{usedBytes:9,totalBytes:8},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:null},{pciAddress:'unknown',utilizationPercent:50}]}),
     {metadata:{name:'missing-heartbeat'},readiness:'Ready',status:{usage:{cpuPercent:100}}}];
   await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
-  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['50%','16.7%','50%']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['50%','4 GiB / 24 GiB','50%']);
   await expect(page.getByRole('region',{name:'GPU usage'})).toContainText('3 reporting GPUs · Reporting 2/6 nodes');
   await page.getByRole('link',{name:'Nodes',exact:true}).click();await page.getByRole('button',{name:'pending',exact:true}).click();
   await expect(page.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['100%','3 GiB / 16 GiB','0000:01:00.0 · 60%; 0000:02:00.0 · 90%']);

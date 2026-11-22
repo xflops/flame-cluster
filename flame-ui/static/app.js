@@ -132,16 +132,15 @@ function resourceUsageSummary(nodes) {
   const gpu = readings.flatMap(usage => usage.gpuDevices || []);
   const gpuNodes = readings.filter(usage => usage.gpuDevices?.length).length;
   const metrics = [
-    ['CPU usage', average(cpu), 'Average across reporting nodes', cpu.length],
-    ['Memory usage', memoryTotals.totalBytes ? 100 * memoryTotals.usedBytes / memoryTotals.totalBytes : undefined,
-      memory.length ? usageBytes(memoryTotals) : 'Used / total', memory.length],
-    ['GPU usage', average(gpu.map(device => device.utilizationPercent)),
+    ['CPU usage', usagePercent(average(cpu)), 'Average across reporting nodes', cpu.length],
+    ['Memory usage', usageBytes(memory.length ? memoryTotals : undefined), 'Used / total', memory.length],
+    ['GPU usage', usagePercent(average(gpu.map(device => device.utilizationPercent))),
       `${gpu.length} reporting ${gpu.length === 1 ? 'GPU' : 'GPUs'}`, gpuNodes],
   ];
   const cards = metrics.map(([label, value, description, count]) => `
     <section class="metric usage-metric" aria-label="${label}">
       <h3>${label}</h3>
-      <div class="metric-value">${usagePercent(value)}</div>
+      <div class="metric-value">${e(value)}</div>
       <p>${description} · Reporting ${count}/${nodes.length} nodes</p>
     </section>`).join('');
   return `<section class="dashboard-usage" aria-label="Current usage"><h2>Current usage</h2><div class="usage-grid">${cards}</div></section>`;

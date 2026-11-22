@@ -16,8 +16,7 @@ worker. Incomplete inventories cannot replace the last complete dashboard data.
 
 Current usage comes only from `FlameWorker.status.usage` with a heartbeat aged
 0–120 seconds, including reports from nodes that are not Ready. CPU averages the
-latest samples across reporting workers. Memory shows combined used bytes as a
-percentage of combined total bytes. GPU averages reported device utilization
+latest samples across reporting workers. Memory shows combined used / total bytes. GPU averages reported device utilization
 across reporting GPUs. Coverage counts identify partial results. Missing or
 stale readings display `-`, and genuine zero readings stay zero.
 

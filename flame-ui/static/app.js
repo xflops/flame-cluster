@@ -448,7 +448,20 @@ function openDetails(row) {
   } else if (state.view === 'executors') {
     detail += properties([['Node', row.spec?.node], ['Application', row.spec?.application], ['Session', row.status?.session_id], ['Runtime', shim(row.spec?.shim)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)], ['GPU request', n(row.spec?.resreq?.gpu)]]);
   } else {
-    detail += properties([['Application', row.spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)], ['Priority', n(row.spec?.priority)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)]]);
+    const spec = row.spec;
+    const resources = spec?.resreq;
+    detail += properties([['Application', spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)]]);
+    detail += '<section aria-label="Scheduling"><div class="drawer-section"><h3>Scheduling</h3></div>' + properties([
+      ['Priority', spec ? n(spec.priority) : '-'],
+      ['Minimum instances', spec ? n(spec.min_instances) : '-'],
+      ['Maximum instances', spec ? spec.max_instances ?? 'Unlimited' : '-'],
+      ['Batch size', spec ? n(spec.batch_size) || 1 : '-'],
+      ...(resources ? [
+        ['GPU request', n(resources.gpu)],
+        ['CPU request', n(resources.cpu)],
+        ['Memory request', bytes(resources.memory)],
+      ] : [['Resource request', spec ? 'Cluster default' : '-']]),
+    ]) + '</section>';
     detail += `${sessionProgress(row.status, true)}<div class="drawer-section"><h3>Tasks</h3><button class="button small" id="refresh-tasks">Refresh tasks</button></div><div id="tasks"></div>`;
     detail += '<section aria-label="Session events"><div class="drawer-section"><h3>Events</h3><button class="button small" id="refresh-events">Refresh events</button></div><div id="events" aria-live="polite"></div></section>';
   }

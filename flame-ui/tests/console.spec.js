@@ -227,9 +227,14 @@ test('nodes show overall readiness and capacity with service status in details',
   await expect(capacity.locator('dd')).toHaveText(['0','8','16 GiB']);
 });
 test('session task drawer retains task paging and progress',async({page})=>{
-  await fixture(page);await page.goto('/#/sessions');
+  const session=structuredClone(inventory.sessions[0]);
+  Object.assign(session.spec,{min_instances:2,max_instances:6,batch_size:3,resreq:{gpu:0,cpu:4,memory:2*1024**3}});
+  await fixture(page,{inventories:{training:{...inventory,sessions:[session]}}});await page.goto('/#/sessions');
   await expect(page.getByRole('progressbar').first()).toHaveAttribute('aria-valuenow','76');
   await page.getByRole('button',{name:'session-42',exact:true}).click();
+  const scheduling=page.getByRole('region',{name:'Scheduling'});
+  await expect(scheduling.locator('dt')).toHaveText(['Priority','Minimum instances','Maximum instances','Batch size','GPU request','CPU request','Memory request']);
+  await expect(scheduling.locator('dd')).toHaveText(['1','2','6','3','0','4','2 GiB']);
   const tasks=page.locator('#tasks');
   await expect(tasks.getByRole('columnheader',{name:'Duration',exact:true})).toBeVisible();
   await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('1.25 s');
@@ -249,6 +254,7 @@ test('session drawer loads scoped events newest first and refreshes them indepen
   await page.goto('/#/sessions');
   await page.getByRole('button',{name:'session-42',exact:true}).click();
   expect((await requested).method()).toBe('GET');
+  await expect(page.getByRole('region',{name:'Scheduling'}).locator('dd')).toHaveText(['1','0','Unlimited','1','Cluster default']);
   const events=page.getByRole('region',{name:'Session events',exact:true});
   await expect(events.getByRole('columnheader')).toHaveText(['Time','Code','Message']);
   await expect(events.locator('tbody tr td:last-child')).toHaveText(['Worker allocated <worker>','Session queued']);

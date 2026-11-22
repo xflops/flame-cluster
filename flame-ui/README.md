@@ -28,7 +28,8 @@ available in node details as Executor manager and Object cache. Node details
 also show total GPU, CPU, and memory capacity separately from current usage,
 and list PCI devices detected by flmlet. Unreported values display `-`.
 
-Session details show events from the selected Flame, newest first, with time,
+Session details show scheduling limits, batch size, and resource requests.
+Events from the selected Flame appear newest first with time,
 code, and message. Use **Refresh events** to reload them independently of tasks.
 
 Settings separates full session-manager configuration, the client download,

@@ -478,7 +478,7 @@ async fn configured_flames_keep_resources_mutations_and_join_credentials_isolate
         second_nodes["items"][0]["metadata"]["name"],
         "second-session"
     );
-    let (status, _) = get(app.clone(), "/api/connections/flame-0/sessions/open/tasks").await;
+    let (status, _) = get(app.clone(), "/api/connections/flame-0/sessions/open").await;
     assert_eq!(status, StatusCode::OK);
     let mutation = app
         .clone()
@@ -782,9 +782,7 @@ async fn invalid_filters_and_paging_are_rejected_before_connecting() {
         );
     }
     assert_eq!(
-        get(app, "/api/sessions/session/tasks?state=Running")
-            .await
-            .0,
+        get(app, "/api/sessions/session?state=Running").await.0,
         StatusCode::BAD_REQUEST
     );
 }
@@ -793,19 +791,19 @@ async fn invalid_filters_and_paging_are_rejected_before_connecting() {
 async fn tasks_use_native_bounded_pages_and_require_upstream_totals() {
     let (state, stop) = frontend(Flame::default()).await;
     let app = router(state);
-    let (status, first) = get(app.clone(), "/api/sessions/large-session/tasks").await;
+    let (status, first) = get(app.clone(), "/api/sessions/large-session").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(first["items"].as_array().unwrap().len(), 12);
-    assert_eq!(first["items"][0]["metadata"]["id"], "999");
-    assert_eq!(first["total"], 1000);
-    assert_eq!(first["hasNext"], true);
-    let (status, last) = get(app.clone(), "/api/sessions/large-session/tasks?page=84").await;
+    assert_eq!(first["tasks"]["items"].as_array().unwrap().len(), 12);
+    assert_eq!(first["tasks"]["items"][0]["metadata"]["id"], "999");
+    assert_eq!(first["tasks"]["total"], 1000);
+    assert_eq!(first["tasks"]["hasNext"], true);
+    let (status, last) = get(app.clone(), "/api/sessions/large-session?page=84").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(last["items"].as_array().unwrap().len(), 4);
-    assert_eq!(last["hasNext"], false);
+    assert_eq!(last["tasks"]["items"].as_array().unwrap().len(), 4);
+    assert_eq!(last["tasks"]["hasNext"], false);
     for session in ["missing-paging", "missing-total"] {
         assert_eq!(
-            get(app.clone(), &format!("/api/sessions/{session}/tasks"))
+            get(app.clone(), &format!("/api/sessions/{session}"))
                 .await
                 .0,
             StatusCode::BAD_GATEWAY
@@ -1058,7 +1056,7 @@ async fn upstream_secrets_are_absent_from_responses_and_logs() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
     {
         let (state, stop) = frontend(Flame::default()).await;
-        for path in ["/api/executors", "/api/sessions/secret-error/tasks"] {
+        for path in ["/api/executors", "/api/sessions/secret-error"] {
             let (status, body) = get(router(state.clone()), path).await;
             assert_eq!(status, StatusCode::BAD_GATEWAY);
             assert_eq!(body, json!({"error":"Flame upstream request failed"}));
@@ -1850,10 +1848,12 @@ async fn session_detail_uses_selected_frontend_and_one_native_task_page() {
     let (status, empty) = get(app.clone(), "/api/connections/second/sessions/event-empty").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(empty["session"]["status"]["events"], json!([]));
-    assert_eq!(
-        get(app, "/api/sessions/event-one/events").await.0,
-        StatusCode::NOT_FOUND
-    );
+    for path in [
+        "/api/sessions/event-one/events",
+        "/api/sessions/event-one/tasks",
+    ] {
+        assert_eq!(get(app.clone(), path).await.0, StatusCode::NOT_FOUND);
+    }
     let _ = stop_first.send(());
     let _ = stop_second.send(());
 }

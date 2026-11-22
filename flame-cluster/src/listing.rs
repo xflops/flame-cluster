@@ -187,23 +187,3 @@ pub(crate) async fn read_task_page(
         "total":total,"observedAt":chrono::Utc::now().to_rfc3339()}),
     )
 }
-pub(crate) async fn tasks(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Query(query): Query<PageQuery>,
-) -> Result<Json<Value>, ApiError> {
-    validate_session_id(&id)?;
-    validate_task_query(&query)?;
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        read_task_page(state.client, id, &query),
-    )
-    .await
-    .map_err(|_| {
-        (
-            StatusCode::GATEWAY_TIMEOUT,
-            Json(json!({"error":"Task listing timed out. Retry this session."})),
-        )
-    })??;
-    Ok(Json(result))
-}

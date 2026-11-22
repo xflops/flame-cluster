@@ -55,7 +55,6 @@ fn resource_routes() -> Router<AppState> {
         .route("/flame.yaml", get(client_config::download))
         .route("/nodes", get(nodes::list))
         .route("/{resource}", get(listing::resources))
-        .route("/sessions/{id}/tasks", get(listing::tasks))
         .route("/sessions/{id}", get(sessions::detail))
         .route("/sessions/{id}/actions/{action}", post(actions::action))
 }

@@ -87,8 +87,7 @@ or client-config Secrets require the corresponding scoped Kubernetes identity.
 - `GET /api/connections/{id}/flame.yaml`: selected client YAML as a `flame.yaml` attachment.
 - `GET /api/connections/{id}/nodes`: namespace-scoped FlameWorkers filtered by the selected Flame, with raw resource fields plus `readiness` (Pending, Ready, Not ready, Disabled, or Deleting).
 - `GET /api/connections/{id}/{applications|sessions|executors}`: selected FLM resources.
-- `GET /api/connections/{id}/sessions/{session}/tasks`.
-- `GET /api/connections/{id}/sessions/{session}?page=1&pageSize=12`: native `GetSession` snapshot and one bounded `ListTasks` metadata page, returned as `{session: {metadata, spec, status}, tasks: {items, page, pageSize, total, hasNext, observedAt}}`. Lifecycle events are in `session.status.events`. The wire subset excludes session common data, tokens, and task payloads. The session is fetched first so missing sessions return 404; upstream failures stay generic. The existing `/tasks` route remains available.
+- `GET /api/connections/{id}/sessions/{session}?page=1&pageSize=12`: native `GetSession` snapshot and one bounded `ListTasks` metadata page, returned as `{session: {metadata, spec, status}, tasks: {items, page, pageSize, total, hasNext, observedAt}}`. Lifecycle events are in `session.status.events`. The wire subset excludes session common data, tokens, and task payloads. The session is fetched first so missing sessions return 404; upstream failures stay generic.
 - `POST /api/connections/{id}/sessions/{session}/actions/{suspend|resume|close|delete}` with JSON `{}`.
 - `GET /healthz`: process health, independent of FLM availability.
 

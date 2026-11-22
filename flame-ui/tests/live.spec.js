@@ -80,7 +80,8 @@ test.describe('live Flame deployment', () => {
   test.afterEach(async ({ page }) => {
     const paths = requests.get(page);
     expect(paths.length, 'the browser must request live console APIs').toBeGreaterThan(0);
-    expect(paths.every(path => /^\/api\/connections(?:\/[^/]+\/(?:connection|nodes|applications|sessions|executors)(?:\/[^/]+\/(?:tasks|actions\/(?:suspend|resume|close|delete)))?)?$/.test(path)), JSON.stringify(paths)).toBe(true);
+    const scopedPath = /^\/api\/connections\/[^/]+\/(?:connection|nodes|applications|executors|sessions(?:\/[^/]+(?:\/actions\/(?:suspend|resume|close|delete))?)?)$/;
+    expect(paths.every(path => path === '/api/connections' || scopedPath.test(path)), JSON.stringify(paths)).toBe(true);
     expect(paths.some(path => /\/(?:dashboard|clusters)(?:\/|$)/.test(path)), 'no legacy resource paths').toBe(false);
     expect(failures.get(page), 'all live browser API responses must succeed').toEqual([]);
     expect(new URL(page.url()).pathname, 'console is served at the root URL').toBe('/');

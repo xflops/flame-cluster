@@ -265,7 +265,7 @@ pub struct NodeUsage {
     #[serde(default)]
     pub memory: Option<ByteUsage>,
     #[serde(default)]
-    pub swap: Option<ByteUsage>,
+    pub gpu_devices: Option<Vec<GpuUsage>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
@@ -273,6 +273,14 @@ pub struct NodeUsage {
 pub struct ByteUsage {
     pub used_bytes: u64,
     pub total_bytes: u64,
+}
+
+/// GPU utilization sampled from a local driver, keyed by its PCI address.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuUsage {
+    pub pci_address: String,
+    pub utilization_percent: u8,
 }
 
 /// A PCI device detected by flmlet on the worker host.

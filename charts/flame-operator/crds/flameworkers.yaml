@@ -208,22 +208,24 @@ spec:
                     format: double
                     nullable: true
                     type: number
-                  memory:
+                  gpuDevices:
+                    items:
+                      description: GPU utilization sampled from a local driver, keyed by its PCI address.
+                      properties:
+                        pciAddress:
+                          type: string
+                        utilizationPercent:
+                          format: uint8
+                          maximum: 255.0
+                          minimum: 0.0
+                          type: integer
+                      required:
+                      - pciAddress
+                      - utilizationPercent
+                      type: object
                     nullable: true
-                    properties:
-                      totalBytes:
-                        format: uint64
-                        minimum: 0.0
-                        type: integer
-                      usedBytes:
-                        format: uint64
-                        minimum: 0.0
-                        type: integer
-                    required:
-                    - totalBytes
-                    - usedBytes
-                    type: object
-                  swap:
+                    type: array
+                  memory:
                     nullable: true
                     properties:
                       totalBytes:

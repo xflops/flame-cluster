@@ -31,6 +31,7 @@ impl FakeHost {
         let mut host = Self {
             cache_ready: true,
             reported_version: "v0.8.0".into(),
+            missing: BTreeSet::from([PathBuf::from("/usr/bin/nvidia-smi")]),
             registration: json!({"items":[{"hostname":"actual-host","name":"unrelated-id","state":"Ready"}]}),
             ..Default::default()
         };
@@ -1408,16 +1409,45 @@ fn procfs_usage_reports_memory_before_cpu_and_recovers_after_missing_sample() {
     );
     let mut sampler = flmlet::usage::UsageSampler::default();
 
-    let first = sampler.sample(&mut host).unwrap();
+    let first = sampler.sample(&mut host, &[]).unwrap();
     assert_eq!(first.cpu_percent, None);
     assert_eq!(first.memory.unwrap().used_bytes, 25 * 1024);
-    assert_eq!(first.swap, None);
+    assert_eq!(first.gpu_devices, None);
 
     host.files
         .insert(stat.clone(), b"cpu 60 0 10 130 0 0 0 0".to_vec());
-    assert_eq!(sampler.sample(&mut host).unwrap().cpu_percent, Some(50.0));
+    assert_eq!(
+        sampler.sample(&mut host, &[]).unwrap().cpu_percent,
+        Some(50.0)
+    );
     host.files.remove(&stat);
-    assert_eq!(sampler.sample(&mut host).unwrap().cpu_percent, None);
+    assert_eq!(sampler.sample(&mut host, &[]).unwrap().cpu_percent, None);
     host.files.insert(stat, b"cpu 90 0 10 160 0 0 0 0".to_vec());
-    assert_eq!(sampler.sample(&mut host).unwrap().cpu_percent, None);
+    assert_eq!(sampler.sample(&mut host, &[]).unwrap().cpu_percent, None);
+}
+
+#[test]
+fn amd_gpu_usage_reads_local_pci_utilization_and_preserves_zero() {
+    let mut host = FakeHost::healthy();
+    let path = PathBuf::from("/sys/bus/pci/devices/0000:01:00.0/gpu_busy_percent");
+    let devices = [flame_api::NodePciDevice {
+        address: "0000:01:00.0".into(),
+        vendor_id: "1002".into(),
+        device_id: "744c".into(),
+        class_id: "030000".into(),
+        driver: Some("amdgpu".into()),
+        numa_node: None,
+    }];
+    let mut sampler = flmlet::usage::UsageSampler::default();
+    assert!(sampler.sample(&mut host, &devices).is_none());
+    host.files.insert(path.clone(), b"0\n".to_vec());
+    assert_eq!(
+        sampler.sample(&mut host, &devices).unwrap().gpu_devices,
+        Some(vec![flame_api::GpuUsage {
+            pci_address: "0000:01:00.0".into(),
+            utilization_percent: 0,
+        }])
+    );
+    host.files.insert(path, b"101\n".to_vec());
+    assert!(sampler.sample(&mut host, &devices).is_none());
 }

@@ -225,7 +225,13 @@ async fn cycle(cli: &Cli, client: Client, sampler: &mut UsageSampler) -> Result<
                 cluster: cluster.as_ref(),
             },
         );
-        let usage = next_sampler.sample(&mut host);
+        let pci_devices = result
+            .as_ref()
+            .ok()
+            .and_then(|outcome| outcome.status.as_ref())
+            .and_then(|status| status.pci_devices.as_deref())
+            .unwrap_or_default();
+        let usage = next_sampler.sample(&mut host, pci_devices);
         (result, usage, next_sampler)
     })
     .await?;
@@ -303,14 +309,14 @@ mod tests {
         status.usage = Some(flame_api::NodeUsage {
             cpu_percent: Some(0.0),
             memory: None,
-            swap: Some(flame_api::ByteUsage {
-                used_bytes: 0,
-                total_bytes: 0,
-            }),
+            gpu_devices: Some(vec![flame_api::GpuUsage {
+                pci_address: "0000:01:00.0".into(),
+                utilization_percent: 0,
+            }]),
         });
         assert_eq!(
             status_merge_patch(&status)["status"]["usage"],
-            json!({"cpuPercent":0.0,"memory":null,"swap":{"usedBytes":0,"totalBytes":0}})
+            json!({"cpuPercent":0.0,"memory":null,"gpuDevices":[{"pciAddress":"0000:01:00.0","utilizationPercent":0}]})
         );
     }
 }

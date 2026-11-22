@@ -104,20 +104,30 @@ function reportedUsage(row) {
   const usage = row.status?.usage;
   const validNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
   const pair = value => value && Number.isSafeInteger(value.usedBytes) && value.usedBytes >= 0 && Number.isSafeInteger(value.totalBytes) && value.totalBytes >= 0 && value.usedBytes <= value.totalBytes ? value : undefined;
+  const addresses = new Set();
+  const gpuDevices = Array.isArray(usage?.gpuDevices) ? usage.gpuDevices.filter(device => {
+    const address = device?.pciAddress;
+    if (typeof address !== 'string' || !/^(?:[0-9a-f]{4}|[0-9a-f]{8}):[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$/i.test(address)
+      || !validNumber(device.utilizationPercent) || device.utilizationPercent > 100 || addresses.has(address.toLowerCase())) return false;
+    addresses.add(address.toLowerCase()); return true;
+  }) : [];
   return {cpuPercent: validNumber(usage?.cpuPercent) && usage.cpuPercent <= 100 ? usage.cpuPercent : undefined,
-    memory: pair(usage?.memory), swap: pair(usage?.swap)};
+    memory: pair(usage?.memory), gpuDevices};
 }
+const averageGpuUsage = devices => devices?.length ? devices.reduce((sum, device) => sum + device.utilizationPercent, 0) / devices.length : undefined;
 const usagePercent = value => value === undefined ? '-' : `${f(Number(value.toFixed(1)))}%`;
 const usageBytes = value => value ? `${bytes(value.usedBytes)} / ${bytes(value.totalBytes)}` : '-';
 function resourceUsageContent(nodes) {
   const readings = nodes.map(reportedUsage), total = nodes.length;
   const cpus = readings.map(value => value.cpuPercent).filter(value => value !== undefined);
   const cpu = cpus.length ? cpus.reduce((sum, value) => sum + value, 0) / cpus.length : undefined;
-  const metrics = [['Average CPU', usagePercent(cpu), cpus.length, 'Unweighted average'], ...['memory','swap'].map(key => {
-    const pairs = readings.map(value => value[key]).filter(Boolean);
-    const sum = pairs.length ? pairs.reduce((result, value) => ({usedBytes: result.usedBytes + value.usedBytes, totalBytes: result.totalBytes + value.totalBytes}), {usedBytes:0,totalBytes:0}) : undefined;
-    return [key === 'memory' ? 'Memory usage' : 'Swap usage', usageBytes(sum), pairs.length, 'Used / total'];
-  })];
+  const gpus = readings.flatMap(value => value.gpuDevices || []);
+  const gpuNodes = readings.filter(value => value.gpuDevices?.length).length;
+  const memory = readings.map(value => value.memory).filter(Boolean);
+  const sum = memory.length ? memory.reduce((result, value) => ({usedBytes: result.usedBytes + value.usedBytes, totalBytes: result.totalBytes + value.totalBytes}), {usedBytes:0,totalBytes:0}) : undefined;
+  const metrics = [['Average CPU', usagePercent(cpu), cpus.length, 'Unweighted average'],
+    ['Memory usage', usageBytes(sum), memory.length, 'Used / total'],
+    ['GPU usage', usagePercent(averageGpuUsage(gpus)), gpuNodes, `${gpus.length} GPUs`]];
   return `<section class="dashboard-usage" aria-label="Resource usage"><h2>Resource usage</h2><div class="usage-grid">${metrics.map(([label,value,count,description]) => `<section class="metric usage-metric" aria-label="${label}"><h3>${label}</h3><div class="metric-value">${e(value)}</div><p>${description} · Reporting ${count}/${total} nodes</p></section>`).join('')}</div></section>`;
 }
 function dashboardContent(nodes) {
@@ -375,7 +385,7 @@ function openDetails(row) {
   } else if (state.view === 'nodes') {
     detail += properties([['Cluster', row.metadata?.namespace], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash]]);
     const usage = reportedUsage(row);
-    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([['CPU usage', usagePercent(usage.cpuPercent)], ['Memory usage', usageBytes(usage.memory)], ['Swap usage', usageBytes(usage.swap)]]) + '</section>';
+    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([['CPU usage', usagePercent(usage.cpuPercent)], ['Memory usage', usageBytes(usage.memory)], ['GPU usage', usagePercent(averageGpuUsage(usage.gpuDevices))]]) + '</section>';
     detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['Executor manager', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(serviceState(report?.activeState))}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
     const devices = row.status?.pciDevices;
     detail += '<div class="drawer-section"><h3>PCI devices</h3></div>';

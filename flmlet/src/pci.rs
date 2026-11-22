@@ -15,7 +15,7 @@ fn hex(value: &str, width: usize) -> Option<u32> {
     }
 }
 
-fn pci_address(value: &str) -> Option<String> {
+pub(crate) fn pci_address(value: &str) -> Option<String> {
     let (domain, rest) = value.split_once(':')?;
     let (bus, rest) = rest.split_once(':')?;
     let (device, function) = rest.split_once('.')?;

@@ -1,6 +1,6 @@
 //! Best-effort resource usage from the worker's Linux procfs.
-use crate::Host;
-use flame_api::{ByteUsage, NodeUsage};
+use crate::{Host, command, pci};
+use flame_api::{ByteUsage, GpuUsage, NodePciDevice, NodeUsage};
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -14,9 +14,13 @@ pub struct UsageSampler {
 }
 
 impl UsageSampler {
-    pub fn sample(&mut self, host: &mut impl Host) -> Option<NodeUsage> {
+    pub fn sample(
+        &mut self,
+        host: &mut impl Host,
+        pci_devices: &[NodePciDevice],
+    ) -> Option<NodeUsage> {
         let now = Instant::now();
-        let cpu = read_proc(host, "/proc/stat").and_then(|stat| cpu_counters(&stat));
+        let cpu = read_text(host, "/proc/stat").and_then(|stat| cpu_counters(&stat));
         let cpu_percent = self
             .previous_cpu
             .filter(|(time, _)| now.duration_since(*time) <= MAX_CPU_SAMPLE_AGE)
@@ -24,20 +28,21 @@ impl UsageSampler {
             .and_then(|((_, previous), current)| cpu_utilization(previous, current));
         self.previous_cpu = cpu.map(|counters| (now, counters));
 
-        let (memory, swap) = read_proc(host, "/proc/meminfo")
+        let memory = read_text(host, "/proc/meminfo")
             .as_deref()
-            .map(memory_usage)
-            .unwrap_or_default();
-        (cpu_percent.is_some() || memory.is_some() || swap.is_some()).then_some(NodeUsage {
+            .and_then(memory_usage);
+        let readings = gpu_usage(host, pci_devices);
+        let gpu_devices = (!readings.is_empty()).then_some(readings);
+        (cpu_percent.is_some() || memory.is_some() || gpu_devices.is_some()).then_some(NodeUsage {
             cpu_percent,
             memory,
-            swap,
+            gpu_devices,
         })
     }
 }
 
-fn read_proc(host: &mut impl Host, path: &str) -> Option<String> {
-    String::from_utf8(host.read(Path::new(path)).ok()??).ok()
+fn read_text(host: &mut impl Host, path: impl AsRef<Path>) -> Option<String> {
+    String::from_utf8(host.read(path.as_ref()).ok()??).ok()
 }
 
 fn cpu_counters(stat: &str) -> Option<[u64; 8]> {
@@ -67,18 +72,14 @@ fn cpu_utilization(previous: [u64; 8], current: [u64; 8]) -> Option<f64> {
     (total > 0).then(|| (total - idle) as f64 * 100.0 / total as f64)
 }
 
-fn memory_usage(meminfo: &str) -> (Option<ByteUsage>, Option<ByteUsage>) {
-    let mut memory_total = None;
-    let mut memory_available = None;
-    let mut swap_total = None;
-    let mut swap_free = None;
+fn memory_usage(meminfo: &str) -> Option<ByteUsage> {
+    let mut total = None;
+    let mut available = None;
     for line in meminfo.lines() {
         let mut fields = line.split_ascii_whitespace();
         let target = match fields.next() {
-            Some("MemTotal:") => &mut memory_total,
-            Some("MemAvailable:") => &mut memory_available,
-            Some("SwapTotal:") => &mut swap_total,
-            Some("SwapFree:") => &mut swap_free,
+            Some("MemTotal:") => &mut total,
+            Some("MemAvailable:") => &mut available,
             _ => continue,
         };
         *target = fields
@@ -87,17 +88,71 @@ fn memory_usage(meminfo: &str) -> (Option<ByteUsage>, Option<ByteUsage>) {
             .filter(|_| fields.next() == Some("kB"))
             .and_then(|value| value.checked_mul(1024));
     }
-    let usage = |total: Option<u64>, available: Option<u64>| {
-        let total_bytes = total?;
-        Some(ByteUsage {
-            used_bytes: total_bytes.checked_sub(available?)?,
-            total_bytes,
+    let total_bytes = total.filter(|total| *total > 0)?;
+    Some(ByteUsage {
+        used_bytes: total_bytes.checked_sub(available?)?,
+        total_bytes,
+    })
+}
+
+fn gpu_percent(value: &str) -> Option<u8> {
+    value
+        .trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|value| *value <= 100)
+}
+
+fn nvidia_usage(csv: &str) -> impl Iterator<Item = GpuUsage> + '_ {
+    csv.lines().filter_map(|line| {
+        let (address, percent) = line.split_once(',')?;
+        let address = pci::pci_address(address.trim())?;
+        // NVML prints eight domain digits even on hosts whose sysfs uses four.
+        let (domain, slot) = address.split_once(':')?;
+        let domain = u32::from_str_radix(domain, 16).ok()?;
+        Some(GpuUsage {
+            pci_address: format!("{domain:04x}:{slot}"),
+            utilization_percent: gpu_percent(percent)?,
         })
-    };
-    (
-        usage(memory_total.filter(|total| *total > 0), memory_available),
-        usage(swap_total, swap_free),
-    )
+    })
+}
+
+fn gpu_usage(host: &mut impl Host, devices: &[NodePciDevice]) -> Vec<GpuUsage> {
+    let mut readings = Vec::new();
+    let nvidia_smi = Path::new("/usr/bin/nvidia-smi");
+    if host.executable(nvidia_smi)
+        && let Ok(output) = command(
+            host,
+            nvidia_smi,
+            &[
+                "--query-gpu=pci.bus_id,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+        )
+        && output.success
+    {
+        readings.extend(nvidia_usage(&output.stdout));
+    }
+    for device in devices
+        .iter()
+        .filter(|device| device.driver.as_deref() == Some("amdgpu"))
+    {
+        let Some(address) = pci::pci_address(&device.address) else {
+            continue;
+        };
+        let path = Path::new("/sys/bus/pci/devices")
+            .join(&address)
+            .join("gpu_busy_percent");
+        if let Some(utilization_percent) = read_text(host, path).as_deref().and_then(gpu_percent) {
+            readings.push(GpuUsage {
+                pci_address: address,
+                utilization_percent,
+            });
+        }
+    }
+    readings.sort_by(|a, b| a.pci_address.cmp(&b.pci_address));
+    readings.dedup_by(|a, b| a.pci_address == b.pci_address);
+    readings
 }
 
 #[cfg(test)]
@@ -119,31 +174,35 @@ mod tests {
     }
 
     #[test]
-    fn memory_uses_available_and_preserves_unconfigured_swap() {
-        let (memory, swap) = memory_usage(
-            "MemTotal: 8000 kB\nMemFree: 10 kB\nMemAvailable: 3000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB",
-        );
+    fn memory_uses_available_and_ignores_invalid_or_missing_values() {
         assert_eq!(
-            memory,
+            memory_usage("MemTotal: 8000 kB\nMemFree: 10 kB\nMemAvailable: 3000 kB"),
             Some(ByteUsage {
                 used_bytes: 5000 * 1024,
                 total_bytes: 8000 * 1024
             })
         );
+        assert_eq!(memory_usage("MemTotal: 1 kB\nMemAvailable: 2 kB"), None);
+        assert_eq!(memory_usage("MemTotal: 1 MB\nMemFree: 1 kB"), None);
+    }
+
+    #[test]
+    fn nvidia_reports_valid_pci_utilization_including_zero() {
+        let readings: Vec<_> = nvidia_usage(
+            "00000000:01:00.0, 0\n00000002:02:00.0, 86\n00000000:03:00.0, [N/A]\n00000000:04:00.0, 101\nbad, 15",
+        ).collect();
         assert_eq!(
-            swap,
-            Some(ByteUsage {
-                used_bytes: 0,
-                total_bytes: 0
-            })
-        );
-        assert_eq!(
-            memory_usage("MemTotal: 1 kB\nMemAvailable: 2 kB"),
-            (None, None)
-        );
-        assert_eq!(
-            memory_usage("MemTotal: 1 kB\nMemFree: 1 kB\nSwapTotal: 1 MB\nSwapFree: 0 kB"),
-            (None, None)
+            readings,
+            [
+                GpuUsage {
+                    pci_address: "0000:01:00.0".into(),
+                    utilization_percent: 0
+                },
+                GpuUsage {
+                    pci_address: "0002:02:00.0".into(),
+                    utilization_percent: 86
+                },
+            ]
         );
     }
 }

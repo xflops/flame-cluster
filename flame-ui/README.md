@@ -17,8 +17,9 @@ partial dashboard counts.
 
 Resource usage uses only `FlameWorker.status.usage` with a heartbeat aged 0–120
 seconds, including reports from nodes that are not Ready. CPU is the unweighted
-average across reporting nodes. Memory and swap sum used/total bytes from nodes
-reporting both values; each metric shows its own reporting count. Missing,
+average across reporting nodes. Memory sums used/total bytes from nodes reporting both values. GPU usage is
+the equal-weight average across valid per-device `gpuDevices` readings, with
+device and reporting-node counts. Each metric shows its own reporting count. Missing,
 invalid, future, or stale readings display `-`; genuine zero readings remain
 zero. Node details show the same freshness-checked readings. Existing dashboard
 refresh and cluster selection also apply to usage.

@@ -129,12 +129,13 @@ Flmlet detects PCI devices from the worker's Linux sysfs and publishes them as
 Flame runtime, or successful worker registration. An empty inventory is
 reported as an empty list. If sysfs is unavailable, the field is absent.
 
-Flmlet also samples host CPU, memory, and swap from Linux procfs and writes
-them to `FlameWorker.status.usage` with each worker heartbeat. CPU utilization
-uses aggregate CPU counter deltas between samples, treating idle and I/O wait
-as idle. CPU is unavailable until a second valid sample. Memory used is
-`MemTotal - MemAvailable` and swap used is `SwapTotal - SwapFree`. Their used
-and total values are in bytes. Missing measurements do not affect readiness.
+Flmlet also reports host CPU, memory, and GPU utilization in
+`FlameWorker.status.usage` with each worker heartbeat. CPU uses Linux procfs
+counter deltas, treating idle and I/O wait as idle. CPU is unavailable until a
+second valid sample. Memory used is `MemTotal - MemAvailable`, in bytes. GPU
+utilization is read per device from NVIDIA's `nvidia-smi` when installed and
+from AMD's `gpu_busy_percent` sysfs attribute when supported. Unavailable GPU
+readings are omitted. Missing measurements do not affect readiness.
 
 Confirmed deletion/disable or explicit Kubernetes 401/403 revocation stops and
 disables only this worker's owned FEM/FOC services. A missing referenced cluster

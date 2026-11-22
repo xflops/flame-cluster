@@ -86,7 +86,7 @@ allowlist directly from kubeconfig, without a UI-address flag or port-forward.
 The selector shows namespaces only and opens the first configured Flame by
 default; it has no All clusters option or cross-cluster summary. `/` opens that
 cluster's Dashboard with node readiness and reported capacity totals. A separate
-section shows current CPU, memory, and GPU usage for each worker. Navigation is
+section shows current cluster CPU, memory, and GPU usage. Navigation is
 Dashboard → Nodes → Executors → Applications → Sessions → Settings, with Compact
 density throughout.
 

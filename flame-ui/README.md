@@ -9,19 +9,17 @@ drawers, pending requests, and credentials from the previous Flame.
 Navigation is Dashboard, Nodes, Executors, Applications, Sessions, Settings.
 Dashboard reads the complete selected cluster node inventory in bounded pages.
 Overview shows a circular Ready/not-ready node chart alongside the reported GPU,
-CPU, and memory capacity totals. The Current usage section below it shows each
-worker's latest readings, with PCI addresses identifying individual GPUs. Use a
-monitoring system such as Prometheus for historical views and averages. The
-Nodes table shows capacity per worker. Incomplete inventories cannot replace
-the last complete dashboard data.
+CPU, and memory capacity totals. The Current usage section below it summarizes
+the latest reports for the cluster. Use a monitoring system such as Prometheus
+for historical views and averages over time. The Nodes table shows capacity per
+worker. Incomplete inventories cannot replace the last complete dashboard data.
 
 Current usage comes only from `FlameWorker.status.usage` with a heartbeat aged
-0–120 seconds, including reports from nodes that are not Ready. CPU shows the
-latest sampled interval; memory shows each worker's used/total bytes. Each GPU
-shows its own reported utilization. Reporting node and device counts indicate
-coverage. Missing, invalid, future, or stale readings display `-`; genuine zero
-readings remain zero. Node details show the same freshness-checked readings.
-Existing dashboard refresh and cluster selection also apply to usage.
+0–120 seconds, including reports from nodes that are not Ready. CPU averages the
+latest samples across reporting workers. Memory shows combined used bytes as a
+percentage of combined total bytes. GPU averages reported device utilization
+across reporting GPUs. Coverage counts identify partial results. Missing or
+stale readings display `-`, and genuine zero readings stay zero.
 
 Nodes lists
 enrolled nodes in the selected cluster, including Pending workers that

@@ -75,16 +75,17 @@ test('root is the console and reads only its active Flame resource',async({page}
   await expect(page).toHaveURL(/\/#\/dashboard$/);
   await expect(page.getByRole('heading',{name:'Dashboard',exact:true,level:1})).toBeVisible();
 });
-const usageRow=(page,name)=>page.getByRole('region',{name:'Current usage',exact:true}).getByRole('row').filter({has:page.getByRole('cell',{name,exact:true})});
-test('dashboard sums reported capacity across pages and keeps per-worker usage separate',async({page})=>{
+const cpuUsage=page=>page.getByRole('region',{name:'CPU usage',exact:true}).locator('.metric-value');
+test('dashboard sums reported capacity across pages and keeps cluster usage separate',async({page})=>{
   const now=Date.parse('2030-01-01T00:00:00Z'),gib=1024**3;await page.clock.install({time:new Date(now)});
   const nodes=Array.from({length:101},(_,index)=>({metadata:{name:`worker-${index}`},readiness:index===100?'Pending':'Ready',status:{lastHeartbeatTime:new Date(now).toISOString(),capacity:index===0?{gpu:0,cpu:8,memory:gib}:index===100?{cpu:16,memory:3*gib}:undefined,usage:index===0?{cpuPercent:0,memory:{usedBytes:gib,totalBytes:8*gib}}:index===100?{cpuPercent:50,memory:{usedBytes:3*gib,totalBytes:8*gib},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]}:null}}));
   const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===scoped('nodes'))reads.push(url.searchParams.get('page'))});
   await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
   await expect(page.getByRole('img',{name:'Nodes: 100 ready, 1 not ready, 101 total'})).toBeVisible();expect(reads).toEqual(['1','2']);
-  await expect(usageRow(page,'worker-0').getByRole('cell')).toHaveText(['worker-0','0%','1 GiB / 8 GiB','-']);
-  await expect(usageRow(page,'worker-100').getByRole('cell')).toHaveText(['worker-100','50%','3 GiB / 8 GiB','0000:01:00.0 0%']);
-  await expect(page.getByRole('region',{name:'Current usage'})).toContainText('Reporting: CPU 2/101 nodes · Memory 2/101 nodes · GPU 1/101 nodes (1 GPU)');
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['25%','25%','0%']);
+  await expect(page.getByRole('region',{name:'Memory usage'})).toContainText('4 GiB / 16 GiB · Reporting 2/101 nodes');
+  await expect(page.getByRole('region',{name:'GPU usage'})).toContainText('1 reporting GPU · Reporting 1/101 nodes');
+  await expect(page.getByRole('region',{name:'Current usage'}).getByRole('row')).toHaveCount(0);
   await expect(page.locator('.dashboard-summary .dashboard-capacity .metric-value')).toHaveText(['0','24','4 GiB']);
   await expect(page.locator('.dashboard-summary .dashboard-capacity p')).toHaveText(['Reporting 1/101 nodes','Reporting 2/101 nodes','Reporting 2/101 nodes']);
   await expect(page.locator('.dashboard-summary').getByRole('region',{name:'Current usage'})).toHaveCount(0);
@@ -95,52 +96,47 @@ test('dashboard isolates each selected cluster and shows unknown readings as hyp
   const node=structuredClone(inventory.nodes[0]);node.status.lastHeartbeatTime=new Date(now).toISOString();node.status.usage={cpuPercent:8,gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]};
   const missing={metadata:{name:'unreported'},readiness:'Pending'};
   await fixture(page,{...multiple,inventories:{training:{...inventory,nodes:[node]},production:{...productionInventory,nodes:[missing]}}});await page.goto('/');
-  await expect(usageRow(page,'flm-worker-01').getByRole('cell')).toHaveText(['flm-worker-01','8%','-','0000:01:00.0 0%']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['8%','-','0%']);
   await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
   await expect(page.getByRole('img',{name:'Nodes: 0 ready, 1 not ready, 1 total'})).toBeVisible();
-  await expect(usageRow(page,'unreported').getByRole('cell')).toHaveText(['unreported','-','-','-']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['-','-','-']);
   await expect(page.locator('.dashboard-capacity .metric-value')).toHaveText(['-','-','-']);
-  await expect(page.getByRole('region',{name:'Current usage'})).toContainText('CPU 0/1 nodes · Memory 0/1 nodes · GPU 0/1 nodes (0 GPUs)');
-  await expect(usageRow(page,'flm-worker-01')).toHaveCount(0);
   await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('training');
-  await expect(usageRow(page,'flm-worker-01').getByRole('cell').nth(1)).toHaveText('8%');
+  await expect(cpuUsage(page)).toHaveText('8%');
 });
 test('dashboard refreshes current readings and refuses incomplete inventories',async({page})=>{
   const now=Date.parse('2030-01-01T00:00:00Z');await page.clock.install({time:new Date(now)});
   const node=structuredClone(inventory.nodes[0]);node.status.lastHeartbeatTime=new Date(now).toISOString();node.status.usage={cpuPercent:8};
   await fixture(page,{inventories:{training:{...inventory,nodes:[node]}}});await page.goto('/');
-  await expect(usageRow(page,'flm-worker-01').getByRole('cell').nth(1)).toHaveText('8%');
+  await expect(cpuUsage(page)).toHaveText('8%');
   await page.unroute('**/api/**');node.status.usage.cpuPercent=12;await fixture(page,{inventories:{training:{...inventory,nodes:[node]}}});await page.clock.fastForward(15000);
-  await expect(usageRow(page,'flm-worker-01').getByRole('cell').nth(1)).toHaveText('12%');
+  await expect(cpuUsage(page)).toHaveText('12%');
   await page.goto('/#/nodes');await page.route('**/api/connections/training/nodes?**',route=>route.fulfill({json:{items:[node],total:2,hasNext:false}}));await page.goto('/#/dashboard');
   await expect(page.locator('#notice')).toContainText('incomplete');await expect(page.locator('#notice')).toContainText('last successful data');
-  await expect(usageRow(page,'flm-worker-01').getByRole('cell').nth(1)).toHaveText('12%');
+  await expect(cpuUsage(page)).toHaveText('12%');
 });
-test('current GPU devices remain individual and usage does not require Ready status',async({page})=>{
+test('cluster usage averages CPU and GPU samples and weights memory by bytes',async({page})=>{
   const now=Date.parse('2030-01-01T00:00:00Z'),gib=1024**3;await page.clock.install({time:new Date(now)});
   const node=(name,readiness,age,usage)=>({metadata:{name},readiness,status:{lastHeartbeatTime:new Date(now-age).toISOString(),usage}});
   const nodes=[node('zero','Ready',0,{cpuPercent:0,memory:{usedBytes:gib,totalBytes:8*gib},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]}),
-    node('pending','Pending',0,{cpuPercent:100,memory:{usedBytes:3*gib,totalBytes:8*gib},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:60},{pciAddress:'0000:02:00.0',utilizationPercent:90}]}),
+    node('pending','Pending',0,{cpuPercent:100,memory:{usedBytes:3*gib,totalBytes:16*gib},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:60},{pciAddress:'0000:02:00.0',utilizationPercent:90}]}),
     node('stale','Ready',121000,{cpuPercent:100,gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:100}]}),node('future','Ready',-1000,{cpuPercent:100}),
     node('invalid','Ready',0,{cpuPercent:101,memory:{usedBytes:9,totalBytes:8},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:null},{pciAddress:'unknown',utilizationPercent:50}]}),
     {metadata:{name:'missing-heartbeat'},readiness:'Ready',status:{usage:{cpuPercent:100}}}];
   await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
-  await expect(usageRow(page,'zero').getByRole('cell')).toHaveText(['zero','0%','1 GiB / 8 GiB','0000:01:00.0 0%']);
-  await expect(usageRow(page,'pending').getByRole('cell')).toHaveText(['pending','100%','3 GiB / 8 GiB','0000:01:00.0 60% 0000:02:00.0 90%']);
-  for(const name of ['stale','future','invalid','missing-heartbeat']) await expect(usageRow(page,name).getByRole('cell')).toHaveText([name,'-','-','-']);
-  await expect(page.getByRole('region',{name:'Current usage'})).toContainText('CPU 2/6 nodes · Memory 2/6 nodes · GPU 2/6 nodes (3 GPUs)');
-  await expect(page.locator('.dashboard-summary')).not.toContainText(/average|swap/i);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['50%','16.7%','50%']);
+  await expect(page.getByRole('region',{name:'GPU usage'})).toContainText('3 reporting GPUs · Reporting 2/6 nodes');
   await page.getByRole('link',{name:'Nodes',exact:true}).click();await page.getByRole('button',{name:'pending',exact:true}).click();
-  await expect(page.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['100%','3 GiB / 8 GiB','0000:01:00.0 · 60%; 0000:02:00.0 · 90%']);
+  await expect(page.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['100%','3 GiB / 16 GiB','0000:01:00.0 · 60%; 0000:02:00.0 · 90%']);
 });
 test('cached current usage expires during an upstream failure',async({page})=>{
   const now=Date.parse('2030-01-01T00:00:00Z');await page.clock.install({time:new Date(now)});
   const node=structuredClone(inventory.nodes[0]);node.status.lastHeartbeatTime=new Date(now).toISOString();node.status.usage={cpuPercent:0,gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]};
   await fixture(page,{inventories:{training:{...inventory,nodes:[node]}}});await page.goto('/');
-  await expect(usageRow(page,'flm-worker-01').getByRole('cell')).toHaveText(['flm-worker-01','0%','-','0000:01:00.0 0%']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['0%','-','0%']);
   await page.unroute('**/api/**');await fixture(page,{fail:true});await page.clock.fastForward(121000);
   await expect(page.locator('#notice')).toContainText('last successful data');
-  await expect(usageRow(page,'flm-worker-01').getByRole('cell')).toHaveText(['flm-worker-01','-','-','-']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['-','-','-']);
 });
 test('settings shows the configured cluster without requesting a resource inventory',async({page})=>{
   const paths=[];page.on('request',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))paths.push(new URL(r.url()).pathname)});

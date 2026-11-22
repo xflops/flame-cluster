@@ -142,8 +142,8 @@ capacity is used. Applications, sessions, executors, and tasks still read the
 selected FLM. Worker-list failures are reported as errors, not healthy empty
 inventories. There is no cross-cluster summary or All clusters option. `/` opens
 the selected cluster's Dashboard. Overview shows node readiness and total
-reported GPU, CPU, and memory capacity. Current usage below it shows each
-worker's latest CPU and memory usage and per-device GPU readings. Both sections
+reported GPU, CPU, and memory capacity. Current usage below it summarizes the
+latest CPU, memory, and GPU utilization across the selected cluster. Both sections
 use FlameWorker status and show how many workers report each measurement.
 Unavailable values display `-`. The Nodes page shows capacity per worker.
 

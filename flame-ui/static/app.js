@@ -117,18 +117,34 @@ function reportedUsage(row) {
 const usagePercent = value => value === undefined ? '-' : `${f(Number(value.toFixed(1)))}%`;
 const usageBytes = value => value ? `${bytes(value.usedBytes)} / ${bytes(value.totalBytes)}` : '-';
 const gpuUsageText = devices => devices?.length ? devices.map(device => `${device.pciAddress} · ${usagePercent(device.utilizationPercent)}`).join('; ') : '-';
-function resourceUsageTable(nodes) {
-  const readings = nodes.map(reportedUsage), total = nodes.length;
-  const cpuCount = readings.filter(value => value.cpuPercent !== undefined).length;
-  const memoryCount = readings.filter(value => value.memory).length;
-  const gpuCount = readings.filter(value => value.gpuDevices?.length).length;
-  const devices = readings.reduce((count, value) => count + (value.gpuDevices?.length || 0), 0);
-  const rows = nodes.map((node, index) => {
-    const usage = readings[index];
-    const gpu = usage.gpuDevices?.length ? usage.gpuDevices.map(device => `<div class="gpu-device-reading"><code>${e(device.pciAddress)}</code> <span>${e(usagePercent(device.utilizationPercent))}</span></div>`).join(' ') : '-';
-    return `<tr><td>${e(nameOf(node))}</td><td>${e(usagePercent(usage.cpuPercent))}</td><td>${e(usageBytes(usage.memory))}</td><td>${gpu}</td></tr>`;
-  });
-  return `<section class="metric current-usage" aria-label="Current usage"><h2>Current usage</h2><p>Reporting: CPU ${cpuCount}/${total} nodes · Memory ${memoryCount}/${total} nodes · GPU ${gpuCount}/${total} nodes (${devices} ${devices === 1 ? 'GPU' : 'GPUs'})</p>${table(['Node','CPU usage','Memory usage','GPU usage'], rows)}${total ? '' : '<p>No nodes enrolled.</p>'}</section>`;
+function average(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
+}
+
+function resourceUsageSummary(nodes) {
+  const readings = nodes.map(reportedUsage);
+  const cpu = readings.map(usage => usage.cpuPercent).filter(value => value !== undefined);
+  const memory = readings.map(usage => usage.memory).filter(Boolean);
+  const memoryTotals = memory.reduce((totals, reading) => ({
+    usedBytes: totals.usedBytes + reading.usedBytes,
+    totalBytes: totals.totalBytes + reading.totalBytes,
+  }), {usedBytes: 0, totalBytes: 0});
+  const gpu = readings.flatMap(usage => usage.gpuDevices || []);
+  const gpuNodes = readings.filter(usage => usage.gpuDevices?.length).length;
+  const metrics = [
+    ['CPU usage', average(cpu), 'Average across reporting nodes', cpu.length],
+    ['Memory usage', memoryTotals.totalBytes ? 100 * memoryTotals.usedBytes / memoryTotals.totalBytes : undefined,
+      memory.length ? usageBytes(memoryTotals) : 'Used / total', memory.length],
+    ['GPU usage', average(gpu.map(device => device.utilizationPercent)),
+      `${gpu.length} reporting ${gpu.length === 1 ? 'GPU' : 'GPUs'}`, gpuNodes],
+  ];
+  const cards = metrics.map(([label, value, description, count]) => `
+    <section class="metric usage-metric" aria-label="${label}">
+      <h3>${label}</h3>
+      <div class="metric-value">${usagePercent(value)}</div>
+      <p>${description} · Reporting ${count}/${nodes.length} nodes</p>
+    </section>`).join('');
+  return `<section class="dashboard-usage" aria-label="Current usage"><h2>Current usage</h2><div class="usage-grid">${cards}</div></section>`;
 }
 function capacityTotals(nodes) {
   const resources = [['gpu', 'Total GPU'], ['cpu', 'Total CPU'], ['memory', 'Total memory']];
@@ -142,7 +158,7 @@ function capacityTotals(nodes) {
 function dashboardContent(nodes) {
   const total = nodes.length, ready = nodes.filter(node => stateOf(node, 'nodes') === 'Ready').length;
   const other = total - ready, percentage = total ? ready * 100 / total : 0;
-  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacityTotals(nodes)}</div><div class="dashboard-usage">${resourceUsageTable(nodes)}</div>`;
+  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacityTotals(nodes)}</div>${resourceUsageSummary(nodes)}`;
 }
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
 const serviceState = value => typeof value === 'string' && value ? value[0].toUpperCase() + value.slice(1) : value;

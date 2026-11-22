@@ -177,14 +177,12 @@ test('compact desktop layout keeps a full resource page visible',async({page})=>
   expect(last.y + last.height).toBeLessThan(900);
   await expect(page.getByRole('button',{name:'Next →',exact:true})).toBeInViewport();
 });
-test('nodes show FlameWorker enrollment, service status, and details',async({page})=>{
+test('nodes show overall readiness and capacity with service status in details',async({page})=>{
   await fixture(page);await page.goto('/#/nodes');
-  await expect(page.locator('#content th')).toHaveText(['Node','Status','Address','FEM','Cache','Runtime','Executor limit','Heartbeat']);
+  await expect(page.locator('#content th')).toHaveText(['Node','Status','Capacity','Address','Runtime','Executor limit','Heartbeat']);
   await expect(page.locator('#content tbody').getByRole('img',{name:'Ready',exact:true})).toBeVisible();
-  await expect(page.locator('#content tbody .capacity-box')).toHaveText(['GPU0','CPU8','MEM16 GiB']);
+  await expect(page.locator('#content tbody td:nth-child(3) .capacity-box')).toHaveText(['GPU0','CPU8','MEM16 GiB']);
   await expect(page.locator('#content tbody .ready-circle')).toHaveClass(/good/);
-  await expect(page.locator('#content tbody tr').first().locator('td').nth(3)).toHaveText('Active');
-  await expect(page.locator('#content tbody tr').first().locator('td').nth(4)).toHaveText('Active');
   await page.getByRole('button',{name:/flm-worker-01/}).click();
   await expect(page.getByRole('dialog')).toContainText('training-ns');
   await expect(page.getByRole('dialog')).not.toContainText('training-1');
@@ -480,7 +478,7 @@ test('enrolled Pending workers appear before any service status and filters use 
   const stale={...inventory.nodes[0],metadata:{name:'stale-worker',namespace:'training-ns',generation:2},readiness:'Not ready'};
   await fixture(page,{inventories:{training:{...inventory,nodes:[pending,inventory.nodes[0],disabled,stale]}}});await page.goto('/#/nodes');
   const pendingRow=page.locator('#content tbody tr').filter({has:page.getByRole('button',{name:'new-worker',exact:true})});
-  await expect(pendingRow.locator('td')).toHaveText(['new-worker','PendingGPU-CPU-MEM-','192.168.3.30','—','—','CRI','6','—']);
+  await expect(pendingRow.locator('td')).toHaveText(['new-worker','Pending','GPU-CPU-MEM-','192.168.3.30','CRI','6','—']);
   await expect(pendingRow.getByRole('img',{name:'Pending',exact:true})).toHaveAttribute('title','Pending');
   await expect(pendingRow.locator('.ready-circle')).toHaveClass(/bad/);
   await expect(pendingRow.locator('.capacity-box')).toHaveText(['GPU-','CPU-','MEM-']);
@@ -503,14 +501,14 @@ test('enrolled Pending workers appear before any service status and filters use 
 });
 test('switching namespaces shows each FlameWorker address, runtime, and executor limit',async({page})=>{
   await fixture(page,multiple);await page.goto('/#/nodes');
-  await expect(page.locator('#content tbody td').nth(2)).toHaveText('192.168.3.8');
-  await expect(page.locator('#content tbody td').nth(6)).toHaveText('10');
-  await expect(page.locator('#content tbody td').nth(7)).not.toHaveText('—');
+  await expect(page.locator('#content tbody td').nth(3)).toHaveText('192.168.3.8');
+  await expect(page.locator('#content tbody td').nth(5)).toHaveText('10');
+  await expect(page.locator('#content tbody td').nth(6)).not.toHaveText('—');
   await expect(page.locator('#content')).not.toContainText('Invalid Date');
   await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
-  await expect(page.locator('#content tbody td').nth(2)).toHaveText('192.168.3.20');
-  await expect(page.locator('#content tbody td').nth(5)).toHaveText('CRI');
-  await expect(page.locator('#content tbody td').nth(6)).toHaveText('24');
+  await expect(page.locator('#content tbody td').nth(3)).toHaveText('192.168.3.20');
+  await expect(page.locator('#content tbody td').nth(4)).toHaveText('CRI');
+  await expect(page.locator('#content tbody td').nth(5)).toHaveText('24');
   await page.getByRole('button',{name:/prod-worker/}).click();
   await expect(page.getByRole('dialog')).toContainText('production-ns');
   await expect(page.getByRole('dialog')).not.toContainText('production-1');

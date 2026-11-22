@@ -15,9 +15,9 @@ Unknown readings are excluded from partial totals. Periodic refresh and errors
 follow the resource pages; failed or incomplete inventories never produce
 partial dashboard counts. Nodes lists
 enrolled nodes in the selected cluster, including Pending workers that
-have not registered with FLM yet. It shows worker readiness, address, reported
-FEM/cache service states, runtimes, executor limit, and heartbeat. Unreported
-values remain unavailable; no hardware capacity is inferred.
+have not registered with FLM yet. The table shows overall readiness, a dedicated Capacity column, address,
+runtimes, executor limit, and heartbeat. FEM and cache service states are
+available in node details. Unreported capacity displays `-`.
 
 Settings separates full session-manager configuration, the client download,
 and node enrollment into three cards. The configuration card displays

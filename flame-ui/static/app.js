@@ -82,7 +82,7 @@ const badge = label => {
   const tone = ['Ready', 'Enabled', 'Succeeded', 'Applied'].includes(label) ? 'green' : ['Open', 'Running', 'Bound'].includes(label) ? 'blue' : ['Pending', 'Binding', 'Suspending', 'Releasing', 'Deferred', 'Reconciling', 'Stale'].includes(label) ? 'orange' : ['Failed', 'Not ready'].includes(label) ? 'red' : '';
   return `<span class="badge ${tone}">${e(label)}</span>`;
 };
-const readiness = (label, compact = false) => `<span class="readiness" title="${e(label)}" role="img" aria-label="${e(label)}"><span class="ready-circle ${label === 'Ready' ? 'good' : 'bad'}" aria-hidden="true"></span><span${compact ? ' class="sr-only"' : ''}>${e(label)}</span></span>`;
+const readiness = label => `<span class="readiness" title="${e(label)}" role="img" aria-label="${e(label)}"><span class="ready-circle ${label === 'Ready' ? 'good' : 'bad'}" aria-hidden="true"></span><span>${e(label)}</span></span>`;
 const date = value => {
   if (!value) return '—';
   const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
@@ -90,13 +90,13 @@ const date = value => {
 };
 const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
 const knownCapacity = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0;
-function nodeStatus(row) {
+function nodeCapacity(row) {
   const capacity = row.status?.capacity;
   const boxes = [['GPU', capacity?.gpu], ['CPU', capacity?.cpu], ['MEM', capacity?.memory]].map(([label, value]) => {
     const formatted = knownCapacity(value) ? label === 'MEM' ? bytes(value) : f(value) : '-';
     return `<span class="capacity-box"><span>${label}</span><strong>${e(formatted)}</strong></span>`;
   }).join('');
-  return `<span class="node-status">${readiness(stateOf(row, 'nodes'), true)}<span class="node-capacities">${boxes}</span></span>`;
+  return `<span class="node-capacities">${boxes}</span>`;
 }
 function dashboardContent(nodes) {
   const total = nodes.length, ready = nodes.filter(node => stateOf(node, 'nodes') === 'Ready').length;
@@ -110,7 +110,6 @@ function dashboardContent(nodes) {
   return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacities}</div>`;
 }
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
-const cacheState = row => row.spec?.manageObjectCache === false ? 'Not managed' : row.status?.objectCache?.activeState;
 const serviceState = value => typeof value === 'string' && value ? value[0].toUpperCase() + value.slice(1) : value;
 const empty = (title, description, kind = state.view) => `<div class="empty">${icon(kind)}<h3>${e(title)}</h3><p>${e(description)}</p></div>`;
 function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th scope="col">${e(header)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`; }
@@ -280,8 +279,8 @@ function render() {
   } else if (state.view === 'sessions') {
     $('#content').innerHTML = table(['Session', 'State', 'Application', 'Task progress', 'Created', 'Actions'], displayed.map((row, i) => `<tr><td>${resourceLink(row, i)}</td><td>${badge(stateOf(row, 'sessions'))}</td><td>${e(row.spec?.application)}</td><td>${sessionProgress(row.status)}</td><td>${date(row.status?.creation_time)}</td><td>${sessionActions(row, i)}</td></tr>`));
   } else if (state.view === 'nodes') {
-    $('#content').innerHTML = table(['Node', 'Status', 'Address', 'FEM', 'Cache', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
-      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : undefined)}</td><td>${nodeStatus(row)}</td><td>${e(row.spec?.address)}</td><td>${e(serviceState(row.status?.fem?.activeState))}</td><td>${e(serviceState(cacheState(row)))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
+    $('#content').innerHTML = table(['Node', 'Status', 'Capacity', 'Address', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
+      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : undefined)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${nodeCapacity(row)}</td><td>${e(row.spec?.address)}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
     ));
   } else {
     $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));

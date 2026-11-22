@@ -1035,8 +1035,7 @@ dialog::backdrop {
 .dashboard-capacity p { font-size:11px; color:#667085; margin-bottom:0 }
 @media(max-width:1100px) { .dashboard-summary { grid-template-columns:repeat(2,minmax(0,1fr)) } }
 @media(max-width:600px) { .dashboard-summary { grid-template-columns:minmax(0,1fr); padding:12px } }
-.node-status,.node-capacities { display:inline-flex; align-items:center; gap:6px; white-space:nowrap }
-.node-status>.readiness { gap:0; margin-right:2px }
+.node-capacities { display:inline-flex; align-items:center; gap:6px; white-space:nowrap }
 .capacity-box { display:inline-flex; align-items:center; gap:5px; border:1px solid #d9dee7; border-radius:4px; padding:3px 5px; line-height:1.1; font-size:9px; color:#667085 }
 .capacity-box strong { font-size:11px; font-weight:600; color:#344054; font-variant-numeric:tabular-nums }
 .ready-circle { display:inline-block; width:8px; height:8px; border-radius:50%; background:#94a3b8; flex-shrink:0 }

@@ -15,6 +15,7 @@ use std::{
 
 pub mod host;
 mod pci;
+pub mod usage;
 
 pub const FEM: &str = "flame-executor-manager.service";
 pub const FOC: &str = "flame-object-cache.service";
@@ -554,6 +555,7 @@ pub fn failed_status(worker: &FlameWorker, error: &str) -> FlameWorkerStatus {
     status.last_heartbeat_time = chrono::Utc::now().to_rfc3339();
     status.conditions = conditions(worker, false, false, "ReconcileFailed", error);
     status.capacity = None;
+    status.usage = None;
     status.pci_devices = None;
     status
 }
@@ -1096,6 +1098,7 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
         hostname: Some(hostname),
         registered,
         capacity,
+        usage: None,
         pci_devices,
         cache_ready,
         fem,

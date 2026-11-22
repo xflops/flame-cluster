@@ -98,6 +98,28 @@ function nodeCapacity(row) {
   }).join('');
   return `<span class="node-capacities">${boxes}</span>`;
 }
+function reportedUsage(row) {
+  const age = Date.now() - Date.parse(row.status?.lastHeartbeatTime);
+  if (!Number.isFinite(age) || age < 0 || age > 120000) return {};
+  const usage = row.status?.usage;
+  const validNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const pair = value => value && Number.isSafeInteger(value.usedBytes) && value.usedBytes >= 0 && Number.isSafeInteger(value.totalBytes) && value.totalBytes >= 0 && value.usedBytes <= value.totalBytes ? value : undefined;
+  return {cpuPercent: validNumber(usage?.cpuPercent) && usage.cpuPercent <= 100 ? usage.cpuPercent : undefined,
+    memory: pair(usage?.memory), swap: pair(usage?.swap)};
+}
+const usagePercent = value => value === undefined ? '-' : `${f(Number(value.toFixed(1)))}%`;
+const usageBytes = value => value ? `${bytes(value.usedBytes)} / ${bytes(value.totalBytes)}` : '-';
+function resourceUsageContent(nodes) {
+  const readings = nodes.map(reportedUsage), total = nodes.length;
+  const cpus = readings.map(value => value.cpuPercent).filter(value => value !== undefined);
+  const cpu = cpus.length ? cpus.reduce((sum, value) => sum + value, 0) / cpus.length : undefined;
+  const metrics = [['Average CPU', usagePercent(cpu), cpus.length, 'Unweighted average'], ...['memory','swap'].map(key => {
+    const pairs = readings.map(value => value[key]).filter(Boolean);
+    const sum = pairs.length ? pairs.reduce((result, value) => ({usedBytes: result.usedBytes + value.usedBytes, totalBytes: result.totalBytes + value.totalBytes}), {usedBytes:0,totalBytes:0}) : undefined;
+    return [key === 'memory' ? 'Memory usage' : 'Swap usage', usageBytes(sum), pairs.length, 'Used / total'];
+  })];
+  return `<section class="dashboard-usage" aria-label="Resource usage"><h2>Resource usage</h2><div class="usage-grid">${metrics.map(([label,value,count,description]) => `<section class="metric usage-metric" aria-label="${label}"><h3>${label}</h3><div class="metric-value">${e(value)}</div><p>${description} · Reporting ${count}/${total} nodes</p></section>`).join('')}</div></section>`;
+}
 function dashboardContent(nodes) {
   const total = nodes.length, ready = nodes.filter(node => stateOf(node, 'nodes') === 'Ready').length;
   const other = total - ready, percentage = total ? ready * 100 / total : 0;
@@ -258,7 +280,7 @@ function render() {
     return;
   }
   if (dashboard) {
-    $('#content').innerHTML = data ? dashboardContent(data.items) : empty(errors.length ? 'Unable to load dashboard' : 'Loading dashboard', errors.length ? 'Refresh to retry. No partial node totals are shown.' : 'Reading reported node inventory…');
+    $('#content').innerHTML = data ? dashboardContent(data.items) + resourceUsageContent(data.items) : empty(errors.length ? 'Unable to load dashboard' : 'Loading dashboard', errors.length ? 'Refresh to retry. No partial node totals are shown.' : 'Reading reported node inventory…');
     return;
   }
   const rows = data?.items || [], total = data?.total ?? rows.length;
@@ -352,6 +374,8 @@ function openDetails(row) {
     if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
   } else if (state.view === 'nodes') {
     detail += properties([['Cluster', row.metadata?.namespace], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash]]);
+    const usage = reportedUsage(row);
+    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([['CPU usage', usagePercent(usage.cpuPercent)], ['Memory usage', usageBytes(usage.memory)], ['Swap usage', usageBytes(usage.swap)]]) + '</section>';
     detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['Executor manager', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(serviceState(report?.activeState))}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
     const devices = row.status?.pciDevices;
     detail += '<div class="drawer-section"><h3>PCI devices</h3></div>';

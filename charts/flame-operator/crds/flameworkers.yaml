@@ -199,6 +199,46 @@ spec:
               registered:
                 default: false
                 type: boolean
+              usage:
+                description: Host measurements sampled by flmlet at the worker heartbeat.
+                nullable: true
+                properties:
+                  cpuPercent:
+                    description: Overall CPU utilization across logical CPUs, from 0 to 100.
+                    format: double
+                    nullable: true
+                    type: number
+                  memory:
+                    nullable: true
+                    properties:
+                      totalBytes:
+                        format: uint64
+                        minimum: 0.0
+                        type: integer
+                      usedBytes:
+                        format: uint64
+                        minimum: 0.0
+                        type: integer
+                    required:
+                    - totalBytes
+                    - usedBytes
+                    type: object
+                  swap:
+                    nullable: true
+                    properties:
+                      totalBytes:
+                        format: uint64
+                        minimum: 0.0
+                        type: integer
+                      usedBytes:
+                        format: uint64
+                        minimum: 0.0
+                        type: integer
+                    required:
+                    - totalBytes
+                    - usedBytes
+                    type: object
+                type: object
             required:
             - configHash
             - lastHeartbeatTime

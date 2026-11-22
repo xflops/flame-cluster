@@ -117,6 +117,46 @@ test('dashboard refreshes periodically and refuses incomplete inventories',async
   await expect(page.locator('#notice')).toContainText('last successful data');
   await expect(page.getByRole('region',{name:'Total CPU',exact:true}).locator('.metric-value')).toHaveText('12');
 });
+test('resource usage averages fresh CPU and sums paired reporters independently of readiness',async({page})=>{
+  const now=Date.parse('2030-01-01T00:00:00Z'), gib=1024**3;
+  await page.clock.install({time:new Date(now)});
+  const node=(name,readiness,age,usage)=>({metadata:{name},readiness,status:{lastHeartbeatTime:new Date(now-age).toISOString(),usage}});
+  const nodes=[
+    node('zero','Ready',0,{cpuPercent:0,memory:{usedBytes:gib,totalBytes:8*gib},swap:{usedBytes:0,totalBytes:0}}),
+    node('pending','Pending',0,{cpuPercent:100,memory:{usedBytes:3*gib,totalBytes:8*gib},swap:{usedBytes:gib,totalBytes:4*gib}}),
+    node('stale','Ready',121000,{cpuPercent:100,memory:{usedBytes:8*gib,totalBytes:8*gib}}),
+    node('future','Ready',-1000,{cpuPercent:100}),
+    node('invalid','Ready',0,{cpuPercent:101,memory:{usedBytes:9,totalBytes:8},swap:null}),
+    {metadata:{name:'missing-heartbeat'},readiness:'Ready',status:{usage:{cpuPercent:100}}},
+  ];
+  await fixture(page,{...multiple,inventories:{training:{...inventory,nodes}}});await page.goto('/');
+  for(const [label,value] of [['Average CPU','50%'],['Memory usage','4 GiB / 16 GiB'],['Swap usage','1 GiB / 4 GiB']]) {
+    const tile=page.getByRole('region',{name:label,exact:true});
+    await expect(tile.locator('.metric-value')).toHaveText(value);
+    await expect(tile).toContainText('Reporting 2/6 nodes');
+  }
+  await expect(page.getByRole('region',{name:'Average CPU',exact:true})).toContainText('Unweighted average');
+  await page.getByRole('link',{name:'Nodes',exact:true}).click();
+  await page.getByRole('button',{name:'zero',exact:true}).click();
+  await expect(page.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['0%','1 GiB / 8 GiB','0 B / 0 B']);
+  await page.getByRole('button',{name:'Close details'}).click();
+  await page.getByRole('link',{name:'Dashboard',exact:true}).click();
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['-','-','-']);
+  await expect(page.locator('.usage-metric p')).toHaveText(['Unweighted average · Reporting 0/1 nodes','Used / total · Reporting 0/1 nodes','Used / total · Reporting 0/1 nodes']);
+});
+test('resource usage refreshes and expires even when cached inventory remains after a failure',async({page})=>{
+  const now=Date.parse('2030-01-01T00:00:00Z');await page.clock.install({time:new Date(now)});
+  const node=structuredClone(inventory.nodes[0]);node.status.lastHeartbeatTime=new Date(now).toISOString();node.status.usage={cpuPercent:0};
+  await fixture(page,{inventories:{training:{...inventory,nodes:[node]}}});await page.goto('/');
+  await expect(page.getByRole('region',{name:'Average CPU',exact:true}).locator('.metric-value')).toHaveText('0%');
+  await page.unroute('**/api/**');node.status.usage.cpuPercent=25;
+  await fixture(page,{inventories:{training:{...inventory,nodes:[node]}}});await page.clock.fastForward(15000);
+  await expect(page.getByRole('region',{name:'Average CPU',exact:true}).locator('.metric-value')).toHaveText('25%');
+  await page.unroute('**/api/**');await fixture(page,{fail:true});await page.clock.fastForward(121000);
+  await expect(page.locator('#notice')).toContainText('last successful data');
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['-','-','-']);
+});
 test('settings shows the configured cluster without requesting a resource inventory',async({page})=>{
   const paths=[];page.on('request',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))paths.push(new URL(r.url()).pathname)});
   await fixture(page);await page.goto('/#/settings');
@@ -193,7 +233,7 @@ test('nodes show overall readiness and capacity with service status in details',
   await expect(page.getByRole('dialog').getByRole('row').filter({hasText:'0000:03:00.0'}).getByRole('cell')).toHaveText(['0000:03:00.0','10de','1234','030000','-','0']);
   await expect(page.getByRole('dialog')).toContainText('Worker registered and services active');
   await expect(page.getByRole('dialog')).toContainText('192.168.3.8');
-  await expect(page.getByRole('dialog')).not.toContainText(/CPU|Memory capacity|Operating system|GPU/);
+  await expect(page.getByRole('dialog')).not.toContainText(/Memory capacity|Operating system|GPU/);
 });
 test('session task drawer retains task paging and progress',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');
@@ -491,8 +531,9 @@ test('enrolled Pending workers appear before any service status and filters use 
   await expect(drawer).toContainText('Worker status has not been reported yet.');
   await expect(drawer).toContainText('training-ns');
   await expect(drawer).toContainText('192.168.3.30');
-  await expect(drawer).not.toContainText(/CPU|Memory|GPU|Invalid Date/);
+  await expect(drawer).not.toContainText(/GPU|Invalid Date/);
   await expect(drawer.getByText('0',{exact:true})).toHaveCount(0);
+  await expect(drawer.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['-','-','-']);
   await page.getByRole('button',{name:'Close details'}).click();
   for(const [readiness,name] of [['Disabled','disabled-worker'],['Not ready','stale-worker'],['Ready','flm-worker-01'],['Pending','new-worker']]) {
     const requested=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('nodes')&&new URL(request.url()).searchParams.get('state')===readiness);

@@ -230,6 +230,8 @@ pub struct FlameWorkerStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<NodeCapacity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<NodeUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pci_devices: Option<Vec<NodePciDevice>>,
     #[serde(default)]
     pub cache_ready: bool,
@@ -251,6 +253,26 @@ pub struct NodeCapacity {
     /// Memory in bytes.
     #[serde(default)]
     pub memory: Option<u64>,
+}
+
+/// Host measurements sampled by flmlet at the worker heartbeat.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeUsage {
+    /// Overall CPU utilization across logical CPUs, from 0 to 100.
+    #[serde(default)]
+    pub cpu_percent: Option<f64>,
+    #[serde(default)]
+    pub memory: Option<ByteUsage>,
+    #[serde(default)]
+    pub swap: Option<ByteUsage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ByteUsage {
+    pub used_bytes: u64,
+    pub total_bytes: u64,
 }
 
 /// A PCI device detected by flmlet on the worker host.

@@ -13,7 +13,17 @@ memory totals use only `FlameWorker.status.capacity` reports; each total shows
 its reporting node count, and missing totals display `-` rather than zero.
 Unknown readings are excluded from partial totals. Periodic refresh and errors
 follow the resource pages; failed or incomplete inventories never produce
-partial dashboard counts. Nodes lists
+partial dashboard counts.
+
+Resource usage uses only `FlameWorker.status.usage` with a heartbeat aged 0–120
+seconds, including reports from nodes that are not Ready. CPU is the unweighted
+average across reporting nodes. Memory and swap sum used/total bytes from nodes
+reporting both values; each metric shows its own reporting count. Missing,
+invalid, future, or stale readings display `-`; genuine zero readings remain
+zero. Node details show the same freshness-checked readings. Existing dashboard
+refresh and cluster selection also apply to usage.
+
+Nodes lists
 enrolled nodes in the selected cluster, including Pending workers that
 have not registered with FLM yet. The table shows overall readiness, a dedicated Capacity column, address,
 runtimes, executor limit, and heartbeat. FEM and cache service states are

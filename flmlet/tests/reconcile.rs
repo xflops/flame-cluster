@@ -1395,3 +1395,29 @@ fn pci_inventory_comes_from_local_sysfs_without_registration() {
         .insert(device.join("numa_node"), b"-1\n".to_vec());
     assert_eq!(report(&mut host).unwrap()[0].numa_node, None);
 }
+
+#[test]
+fn procfs_usage_reports_memory_before_cpu_and_recovers_after_missing_sample() {
+    let mut host = FakeHost::healthy();
+    let stat = PathBuf::from("/proc/stat");
+    host.files
+        .insert(stat.clone(), b"cpu 10 0 10 80 0 0 0 0".to_vec());
+    host.files.insert(
+        "/proc/meminfo".into(),
+        b"MemTotal: 100 kB\nMemAvailable: 75 kB".to_vec(),
+    );
+    let mut sampler = flmlet::usage::UsageSampler::default();
+
+    let first = sampler.sample(&mut host).unwrap();
+    assert_eq!(first.cpu_percent, None);
+    assert_eq!(first.memory.unwrap().used_bytes, 25 * 1024);
+    assert_eq!(first.swap, None);
+
+    host.files
+        .insert(stat.clone(), b"cpu 60 0 10 130 0 0 0 0".to_vec());
+    assert_eq!(sampler.sample(&mut host).unwrap().cpu_percent, Some(50.0));
+    host.files.remove(&stat);
+    assert_eq!(sampler.sample(&mut host).unwrap().cpu_percent, None);
+    host.files.insert(stat, b"cpu 90 0 10 160 0 0 0 0".to_vec());
+    assert_eq!(sampler.sample(&mut host).unwrap().cpu_percent, None);
+}

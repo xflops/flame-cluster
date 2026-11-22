@@ -107,7 +107,7 @@ function dashboardContent(nodes) {
     const value = readings.length ? key === 'memory' ? bytes(sum) : f(sum) : '-';
     return `<section class="metric dashboard-capacity" aria-label="${label}"><h2>${label}</h2><div class="metric-value">${e(value)}</div><p>Reporting ${readings.length}/${total} nodes</p></section>`;
   }).join('');
-  return `<div class="dashboard-summary"><section class="metric" aria-label="Node readiness"><h2>Node readiness</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacities}</div>`;
+  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacities}</div>`;
 }
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
 const cacheState = row => row.spec?.manageObjectCache === false ? 'Not managed' : row.status?.objectCache?.activeState;
@@ -212,7 +212,7 @@ function render() {
   $('.data-panel').classList.toggle('settings-panel', settings);
   $('.data-panel').setAttribute('aria-label', settings ? 'Cluster settings' : 'Resource data');
   $('#content').classList.toggle('settings-grid', settings);
-  $('#section-title').textContent = settings ? 'Cluster connection' : dashboard ? 'Cluster overview' : `All ${view.title.toLowerCase()}`;
+  $('#section-title').textContent = settings ? 'Cluster connection' : dashboard ? 'Overview' : `All ${view.title.toLowerCase()}`;
   $('#row-count').hidden = settings || dashboard;
   $('.filters').hidden = settings || dashboard;
   $('.table-footer').hidden = settings || dashboard;

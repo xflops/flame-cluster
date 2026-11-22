@@ -8,21 +8,20 @@ drawers, pending requests, and credentials from the previous Flame.
 
 Navigation is Dashboard, Nodes, Executors, Applications, Sessions, Settings.
 Dashboard reads the complete selected cluster node inventory in bounded pages.
-Its circular chart counts Ready versus all other node states. GPU, CPU, and
-memory totals use only `FlameWorker.status.capacity` reports; each total shows
-its reporting node count, and missing totals display `-` rather than zero.
-Unknown readings are excluded from partial totals. Periodic refresh and errors
-follow the resource pages; failed or incomplete inventories never produce
-partial dashboard counts.
+Its Overview row shows a circular Ready/not-ready node chart alongside each
+worker's current CPU usage, memory usage, and per-GPU utilization. Worker names
+and GPU PCI addresses identify every reading. There is no averaging or history;
+use a monitoring system such as Prometheus for those views. Hardware capacity
+stays in the Nodes view. Periodic refresh and errors follow the resource pages;
+failed or incomplete inventories never produce partial dashboard counts.
 
-Resource usage uses only `FlameWorker.status.usage` with a heartbeat aged 0–120
-seconds, including reports from nodes that are not Ready. CPU is the unweighted
-average across reporting nodes. Memory sums used/total bytes from nodes reporting both values. GPU usage is
-the equal-weight average across valid per-device `gpuDevices` readings, with
-device and reporting-node counts. Each metric shows its own reporting count. Missing,
-invalid, future, or stale readings display `-`; genuine zero readings remain
-zero. Node details show the same freshness-checked readings. Existing dashboard
-refresh and cluster selection also apply to usage.
+Current usage comes only from `FlameWorker.status.usage` with a heartbeat aged
+0–120 seconds, including reports from nodes that are not Ready. CPU shows the
+latest sampled interval; memory shows each worker's used/total bytes. Each GPU
+shows its own reported utilization. Reporting node and device counts indicate
+coverage. Missing, invalid, future, or stale readings display `-`; genuine zero
+readings remain zero. Node details show the same freshness-checked readings.
+Existing dashboard refresh and cluster selection also apply to usage.
 
 Nodes lists
 enrolled nodes in the selected cluster, including Pending workers that

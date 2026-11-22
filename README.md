@@ -85,8 +85,8 @@ Open `http://<kubeconfig-server-ip>/`. Setup derives the UI external IP and host
 allowlist directly from kubeconfig, without a UI-address flag or port-forward.
 The selector shows namespaces only and opens the first configured Flame by
 default; it has no All clusters option or cross-cluster summary. `/` opens that
-cluster's Dashboard with a node readiness chart and reported GPU/CPU/memory
-totals. Navigation is Dashboard → Nodes → Executors → Applications → Sessions →
+cluster's Dashboard with a node readiness chart and current CPU, memory, and GPU
+readings for each worker. Navigation is Dashboard → Nodes → Executors → Applications → Sessions →
 Settings, with Compact density throughout.
 
 The generated `flame.yaml` client credential lasts one year, with renewal 30 days

@@ -114,32 +114,26 @@ function reportedUsage(row) {
   return {cpuPercent: validNumber(usage?.cpuPercent) && usage.cpuPercent <= 100 ? usage.cpuPercent : undefined,
     memory: pair(usage?.memory), gpuDevices};
 }
-const averageGpuUsage = devices => devices?.length ? devices.reduce((sum, device) => sum + device.utilizationPercent, 0) / devices.length : undefined;
 const usagePercent = value => value === undefined ? '-' : `${f(Number(value.toFixed(1)))}%`;
 const usageBytes = value => value ? `${bytes(value.usedBytes)} / ${bytes(value.totalBytes)}` : '-';
-function resourceUsageContent(nodes) {
+const gpuUsageText = devices => devices?.length ? devices.map(device => `${device.pciAddress} · ${usagePercent(device.utilizationPercent)}`).join('; ') : '-';
+function resourceUsageTable(nodes) {
   const readings = nodes.map(reportedUsage), total = nodes.length;
-  const cpus = readings.map(value => value.cpuPercent).filter(value => value !== undefined);
-  const cpu = cpus.length ? cpus.reduce((sum, value) => sum + value, 0) / cpus.length : undefined;
-  const gpus = readings.flatMap(value => value.gpuDevices || []);
-  const gpuNodes = readings.filter(value => value.gpuDevices?.length).length;
-  const memory = readings.map(value => value.memory).filter(Boolean);
-  const sum = memory.length ? memory.reduce((result, value) => ({usedBytes: result.usedBytes + value.usedBytes, totalBytes: result.totalBytes + value.totalBytes}), {usedBytes:0,totalBytes:0}) : undefined;
-  const metrics = [['Average CPU', usagePercent(cpu), cpus.length, 'Unweighted average'],
-    ['Memory usage', usageBytes(sum), memory.length, 'Used / total'],
-    ['GPU usage', usagePercent(averageGpuUsage(gpus)), gpuNodes, `${gpus.length} GPUs`]];
-  return `<section class="dashboard-usage" aria-label="Resource usage"><h2>Resource usage</h2><div class="usage-grid">${metrics.map(([label,value,count,description]) => `<section class="metric usage-metric" aria-label="${label}"><h3>${label}</h3><div class="metric-value">${e(value)}</div><p>${description} · Reporting ${count}/${total} nodes</p></section>`).join('')}</div></section>`;
+  const cpuCount = readings.filter(value => value.cpuPercent !== undefined).length;
+  const memoryCount = readings.filter(value => value.memory).length;
+  const gpuCount = readings.filter(value => value.gpuDevices?.length).length;
+  const devices = readings.reduce((count, value) => count + (value.gpuDevices?.length || 0), 0);
+  const rows = nodes.map((node, index) => {
+    const usage = readings[index];
+    const gpu = usage.gpuDevices?.length ? usage.gpuDevices.map(device => `<div class="gpu-device-reading"><code>${e(device.pciAddress)}</code> <span>${e(usagePercent(device.utilizationPercent))}</span></div>`).join(' ') : '-';
+    return `<tr><td>${e(nameOf(node))}</td><td>${e(usagePercent(usage.cpuPercent))}</td><td>${e(usageBytes(usage.memory))}</td><td>${gpu}</td></tr>`;
+  });
+  return `<section class="metric current-usage" aria-label="Current usage"><h2>Current usage</h2><p>Reporting: CPU ${cpuCount}/${total} nodes · Memory ${memoryCount}/${total} nodes · GPU ${gpuCount}/${total} nodes (${devices} ${devices === 1 ? 'GPU' : 'GPUs'})</p>${table(['Node','CPU usage','Memory usage','GPU usage'], rows)}${total ? '' : '<p>No nodes enrolled.</p>'}</section>`;
 }
 function dashboardContent(nodes) {
   const total = nodes.length, ready = nodes.filter(node => stateOf(node, 'nodes') === 'Ready').length;
   const other = total - ready, percentage = total ? ready * 100 / total : 0;
-  const capacities = [['gpu', 'Total GPU'], ['cpu', 'Total CPU'], ['memory', 'Total memory']].map(([key, label]) => {
-    const readings = nodes.map(node => node.status?.capacity?.[key]).filter(knownCapacity);
-    const sum = readings.reduce((result, value) => result + Number(value), 0);
-    const value = readings.length ? key === 'memory' ? bytes(sum) : f(sum) : '-';
-    return `<section class="metric dashboard-capacity" aria-label="${label}"><h2>${label}</h2><div class="metric-value">${e(value)}</div><p>Reporting ${readings.length}/${total} nodes</p></section>`;
-  }).join('');
-  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacities}</div>`;
+  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${resourceUsageTable(nodes)}</div>`;
 }
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
 const serviceState = value => typeof value === 'string' && value ? value[0].toUpperCase() + value.slice(1) : value;
@@ -290,7 +284,7 @@ function render() {
     return;
   }
   if (dashboard) {
-    $('#content').innerHTML = data ? dashboardContent(data.items) + resourceUsageContent(data.items) : empty(errors.length ? 'Unable to load dashboard' : 'Loading dashboard', errors.length ? 'Refresh to retry. No partial node totals are shown.' : 'Reading reported node inventory…');
+    $('#content').innerHTML = data ? dashboardContent(data.items) : empty(errors.length ? 'Unable to load dashboard' : 'Loading dashboard', errors.length ? 'Refresh to retry. No partial node totals are shown.' : 'Reading reported node inventory…');
     return;
   }
   const rows = data?.items || [], total = data?.total ?? rows.length;
@@ -385,7 +379,7 @@ function openDetails(row) {
   } else if (state.view === 'nodes') {
     detail += properties([['Cluster', row.metadata?.namespace], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash]]);
     const usage = reportedUsage(row);
-    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([['CPU usage', usagePercent(usage.cpuPercent)], ['Memory usage', usageBytes(usage.memory)], ['GPU usage', usagePercent(averageGpuUsage(usage.gpuDevices))]]) + '</section>';
+    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([['CPU usage', usagePercent(usage.cpuPercent)], ['Memory usage', usageBytes(usage.memory)], ['GPU usage', gpuUsageText(usage.gpuDevices)]]) + '</section>';
     detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['Executor manager', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(serviceState(report?.activeState))}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
     const devices = row.status?.pciDevices;
     detail += '<div class="drawer-section"><h3>PCI devices</h3></div>';

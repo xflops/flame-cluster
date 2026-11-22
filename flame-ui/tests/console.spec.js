@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 const app = (name,state=0) => ({metadata:{name},spec:{shim:3,command:'/usr/local/flame/bin/flmping-service',description:'Application service'},status:{state,creation_time:1794614400000}});
 const inventory = {
   applications:[app('flmping'),app('flmrun',1),...Array.from({length:13},(_,i)=>app(`python-${i}`))],
-  nodes:[{metadata:{name:'flm-worker-01',namespace:'training-ns',generation:1},spec:{clusterRef:'training-1',address:'192.168.3.8',shims:['host','cri'],maxExecutors:10,pythonVersion:'3.12',manageObjectCache:true},readiness:'Ready',status:{capacity:{gpu:0,cpu:8,memory:16*1024**3},observedGeneration:1,hostname:'flm-worker-01',registered:true,cacheReady:true,lastHeartbeatTime:'2026-11-14T00:00:00Z',installedVersion:'0.8.0',configHash:'ready-worker-hash',fem:{activeState:'active',subState:'running',message:'success'},objectCache:{activeState:'active',subState:'running',message:'success'},conditions:[{type:'Ready',status:'True',reason:'Registered',message:'Worker registered and services active'}]}}],
+  nodes:[{metadata:{name:'flm-worker-01',namespace:'training-ns',generation:1},spec:{clusterRef:'training-1',address:'192.168.3.8',shims:['host','cri'],maxExecutors:10,pythonVersion:'3.12',manageObjectCache:true},readiness:'Ready',status:{pciDevices:[{address:'0000:03:00.0',vendor_id:'10de',device_id:'1234',class_id:'030000',driver:'',numa_node:0}],capacity:{gpu:0,cpu:8,memory:16*1024**3},observedGeneration:1,hostname:'flm-worker-01',registered:true,cacheReady:true,lastHeartbeatTime:'2026-11-14T00:00:00Z',installedVersion:'0.8.0',configHash:'ready-worker-hash',fem:{activeState:'active',subState:'running',message:'success'},objectCache:{activeState:'active',subState:'running',message:'success'},conditions:[{type:'Ready',status:'True',reason:'Registered',message:'Worker registered and services active'}]}}],
   sessions:[{metadata:{id:'session-42'},spec:{application:'flmping',priority:1},status:{state:0,running:2,pending:3,succeed:16,failed:0,creation_time:1794614400000}}],
   executors:[{metadata:{id:'executor-01'},spec:{node:'flm-worker-01',application:'flmping',shim:3,resreq:{cpu:2,memory:1024**3}},status:{state:4,session_id:'session-42'}}],
 };
@@ -188,6 +188,9 @@ test('nodes show overall readiness and capacity with service status in details',
   await expect(page.getByRole('dialog')).not.toContainText('training-1');
   await expect(page.getByRole('dialog')).toContainText('ready-worker-hash');
   await expect(page.getByRole('dialog').locator('table').first().locator('tbody tr td:nth-child(2)')).toHaveText(['Active','Active']);
+  await expect(page.getByRole('dialog').getByRole('cell',{name:'Executor manager',exact:true})).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('heading',{name:'PCI devices'})).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('row').filter({hasText:'0000:03:00.0'}).getByRole('cell')).toHaveText(['0000:03:00.0','10de','1234','030000','-','0']);
   await expect(page.getByRole('dialog')).toContainText('Worker registered and services active');
   await expect(page.getByRole('dialog')).toContainText('192.168.3.8');
   await expect(page.getByRole('dialog')).not.toContainText(/CPU|Memory capacity|Operating system|GPU/);

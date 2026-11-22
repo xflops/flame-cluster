@@ -489,11 +489,11 @@ fn node_capacity(node: &Value) -> Option<NodeCapacity> {
     };
     (result.cpu.is_some() || result.gpu.is_some() || result.memory.is_some()).then_some(result)
 }
-fn registration(
+fn registered_inventory_node(
     host: &mut impl Host,
     settings: &Settings,
     hostname: &str,
-) -> Result<(bool, Option<NodeCapacity>)> {
+) -> Result<Option<Value>> {
     let config = settings.conf("flmlet-client.yaml");
     let config = config
         .to_str()
@@ -510,11 +510,11 @@ fn registration(
             ],
         )?;
         if !result.success {
-            return Ok((false, None));
+            return Ok(None);
         }
         let data: Value = serde_json::from_str(&result.stdout)?;
         if let Some(node) = registered_node(&data, hostname) {
-            return Ok((true, node_capacity(node)));
+            return Ok(Some(node.clone()));
         }
         let rows = data
             .get("items")
@@ -524,10 +524,10 @@ fn registration(
                 Error::Invalid("flmctl node listing must contain an inventory array".into())
             })?;
         if rows.len() < 100 {
-            return Ok((false, None));
+            return Ok(None);
         }
     }
-    Ok((false, None))
+    Ok(None)
 }
 
 #[derive(Debug)]
@@ -553,6 +553,7 @@ pub fn failed_status(worker: &FlameWorker, error: &str) -> FlameWorkerStatus {
     status.last_heartbeat_time = chrono::Utc::now().to_rfc3339();
     status.conditions = conditions(worker, false, false, "ReconcileFailed", error);
     status.capacity = None;
+    status.pci_devices = None;
     status
 }
 fn conditions(
@@ -1054,7 +1055,12 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
     };
     let fem = ensure_active(host, FEM)?;
     let hostname = host.hostname()?;
-    let (registered, capacity) = registration(host, settings, &hostname)?;
+    let node = registered_inventory_node(host, settings, &hostname)?;
+    let registered = node.is_some();
+    let capacity = node.as_ref().and_then(node_capacity);
+    let pci_devices = node
+        .and_then(|mut node| node.as_object_mut()?.remove("pci_devices"))
+        .and_then(|devices| serde_json::from_value(devices).ok());
     let address = std::net::SocketAddrV4::new(
         validation::lan_ipv4(&worker.spec.address)?,
         worker.spec.cache_port,
@@ -1092,6 +1098,7 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
         hostname: Some(hostname),
         registered,
         capacity,
+        pci_devices,
         cache_ready,
         fem,
         object_cache,

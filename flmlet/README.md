@@ -124,6 +124,11 @@ Readiness requires active services, the actual hostname Ready in FLM node
 inventory, and TCP cache readiness when FOC is managed. Heartbeats and the
 applied configuration hash are reported on `FlameWorker.status`.
 
+When the installed Flame runtime reports PCI inventory, flmlet publishes it as
+`FlameWorker.status.pciDevices` from the same Ready node matched by hostname.
+An empty inventory is reported as an empty list. Older runtimes and unavailable
+inventory leave the field absent.
+
 Confirmed deletion/disable or explicit Kubernetes 401/403 revocation stops and
 disables only this worker's owned FEM/FOC services. A missing referenced cluster
 also stops them. Transport errors and server failures retain healthy services

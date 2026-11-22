@@ -169,6 +169,33 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              pciDevices:
+                items:
+                  description: A PCI device reported by the executor manager in the native node inventory.
+                  properties:
+                    address:
+                      type: string
+                    class_id:
+                      type: string
+                    device_id:
+                      type: string
+                    driver:
+                      nullable: true
+                      type: string
+                    numa_node:
+                      format: int32
+                      nullable: true
+                      type: integer
+                    vendor_id:
+                      type: string
+                  required:
+                  - address
+                  - class_id
+                  - device_id
+                  - vendor_id
+                  type: object
+                nullable: true
+                type: array
               registered:
                 default: false
                 type: boolean

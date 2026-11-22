@@ -1347,3 +1347,29 @@ fn native_flat_node_capacity_matches_observed_flmctl_output() {
         }
     );
 }
+
+#[test]
+fn pci_inventory_reports_only_matching_ready_host_and_distinguishes_unavailable() {
+    let mut host = FakeHost::healthy();
+    let device = json!({
+        "address":"0000:03:00.0", "vendor_id":"10de", "device_id":"1234",
+        "class_id":"030000", "driver":"vfio-pci", "numa_node":0
+    });
+    host.registration = json!([
+        {"hostname":"another-host","state":"Ready","pci_devices":[device]},
+        {"hostname":"actual-host","state":"Ready"}
+    ]);
+    for inventory in [None, Some(json!([])), Some(json!([device.clone()]))] {
+        if let Some(devices) = &inventory {
+            host.registration[1]["pci_devices"] = devices.clone();
+        }
+        let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+        assert!(outcome.ready);
+        let reported = outcome.status.unwrap().pci_devices;
+        assert_eq!(reported.map(|devices| json!(devices)), inventory);
+    }
+    host.registration[1]["state"] = json!("NotReady");
+    let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    assert!(!outcome.ready);
+    assert!(outcome.status.unwrap().pci_devices.is_none());
+}

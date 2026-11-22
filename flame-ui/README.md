@@ -17,7 +17,9 @@ partial dashboard counts. Nodes lists
 enrolled nodes in the selected cluster, including Pending workers that
 have not registered with FLM yet. The table shows overall readiness, a dedicated Capacity column, address,
 runtimes, executor limit, and heartbeat. FEM and cache service states are
-available in node details. Unreported capacity displays `-`.
+available in node details as Executor manager and Object cache. Node details
+also list the PCI devices reported by flmlet when the installed Flame runtime
+provides PCI inventory. Unreported values display `-`.
 
 Settings separates full session-manager configuration, the client download,
 and node enrollment into three cards. The configuration card displays

@@ -229,6 +229,8 @@ pub struct FlameWorkerStatus {
     pub registered: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<NodeCapacity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pci_devices: Option<Vec<NodePciDevice>>,
     #[serde(default)]
     pub cache_ready: bool,
     #[serde(default)]
@@ -249,6 +251,19 @@ pub struct NodeCapacity {
     /// Memory in bytes.
     #[serde(default)]
     pub memory: Option<u64>,
+}
+
+/// A PCI device reported by the executor manager in the native node inventory.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+pub struct NodePciDevice {
+    pub address: String,
+    pub vendor_id: String,
+    pub device_id: String,
+    pub class_id: String,
+    #[serde(default)]
+    pub driver: Option<String>,
+    #[serde(default)]
+    pub numa_node: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]

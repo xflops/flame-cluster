@@ -122,10 +122,11 @@ async fn api_error(cli: &Cli, error: kube::Error) -> Error {
     }
     error.into()
 }
-// JSON Merge Patch must explicitly clear unavailable capacity, including individual members.
+// JSON Merge Patch must explicitly clear unavailable inventory fields.
 fn status_merge_patch(status: &flame_api::FlameWorkerStatus) -> serde_json::Value {
     let mut patch = json!({"status": status});
     patch["status"]["capacity"] = json!(status.capacity);
+    patch["status"]["pciDevices"] = json!(status.pci_devices);
     patch
 }
 

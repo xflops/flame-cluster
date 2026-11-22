@@ -42,7 +42,13 @@ async function fixture(page, options={}) {
       return route.fulfill({json:{session:data.sessions[0]||null}});
     }
     const currentPage=Number(url.searchParams.get('page')||1),pageSize=Number(url.searchParams.get('pageSize')||12);
-    if(resource==='tasks') return route.fulfill({json:{items:[{metadata:{id:options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`},status:{state:2,creation_time:1794614400000,completion_time:currentPage===1?1794614401250:null}}],page:currentPage,pageSize,total:null,hasNext:currentPage===1}});
+    if(resource==='tasks') {
+      const id = options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`;
+      const created = 1794614400000;
+      const items = [{metadata:{id},status:{state:2,creation_time:created,completion_time:currentPage===1?created+1250:null}}];
+      if(currentPage===1) items.push({metadata:{id:`${id}-same-second`},status:{state:2,creation_time:created,completion_time:created}});
+      return route.fulfill({json:{items,page:currentPage,pageSize,total:null,hasNext:currentPage===1}});
+    }
     if(options.fail) return route.fulfill({status:502,json:{error:'FLM is unavailable'}});
     if(!Object.hasOwn(data,resource)) return route.fulfill({status:404,json:{error:'Unknown resource'}});
     if(options.delays?.[resource]) await new Promise(resolve=>setTimeout(resolve,options.delays[resource]));
@@ -226,6 +232,7 @@ test('session task drawer retains task paging and progress',async({page})=>{
   const tasks=page.locator('#tasks');
   await expect(tasks.getByRole('columnheader',{name:'Duration',exact:true})).toBeVisible();
   await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('1.25 s');
+  await expect(tasks.locator('tbody tr').nth(1).getByRole('cell').last()).toHaveText('<1 s');
   await page.getByRole('button',{name:'Next tasks →'}).click();
   await expect(tasks).toContainText('task-2');
   await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('-');

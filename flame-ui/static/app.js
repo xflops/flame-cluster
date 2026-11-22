@@ -93,6 +93,8 @@ function taskDuration(status) {
   const completed = Number(status?.completion_time);
   if (!Number.isSafeInteger(created) || !Number.isSafeInteger(completed) || created <= 0 || completed < created) return '-';
   const ms = completed - created;
+  // Flame can store timestamps at whole-second precision.
+  if (ms === 0) return created % 1000 === 0 ? '<1 s' : '<1 ms';
   if (ms < 1000) return `${ms} ms`;
   if (ms < 60000) return `${f(ms / 1000)} s`;
   const minutes = Math.floor(ms / 60000);

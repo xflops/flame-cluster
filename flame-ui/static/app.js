@@ -88,6 +88,19 @@ const date = value => {
   const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
   return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
+function taskDuration(status) {
+  const created = Number(status?.creation_time);
+  const completed = Number(status?.completion_time);
+  if (!Number.isSafeInteger(created) || !Number.isSafeInteger(completed) || created <= 0 || completed < created) return '-';
+  const ms = completed - created;
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60000) return `${f(ms / 1000)} s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor(ms / 1000) % 60;
+  return minutes >= 60
+    ? `${Math.floor(minutes / 60)} h ${minutes % 60} m`
+    : `${minutes} m ${seconds} s`;
+}
 const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
 const knownCapacity = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0;
 const formatCapacity = (key, value) => knownCapacity(value) ? (key === 'memory' ? bytes(value) : f(value)) : '-';
@@ -455,7 +468,14 @@ async function loadTasks(row, page = 1) {
     const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}/tasks?page=${page}&pageSize=${pageSize}`, signal);
     if (signal.aborted || state.drawer !== row) return;
     const tasks = data.items;
-    target.innerHTML = tasks.length ? table(['Task', 'State', 'Created', 'Completed'], tasks.map(task => `<tr><td class="mono">${e(idOf(task))}</td><td>${badge(stateOf(task, 'tasks'))}</td><td>${date(task.status?.creation_time)}</td><td>${date(task.status?.completion_time)}</td></tr>`)) : empty(page === 1 ? 'No tasks yet' : 'No tasks on this page', page === 1 ? 'Tasks submitted to this session will appear here.' : 'Use Previous tasks to return to an earlier page.', 'sessions');
+    target.innerHTML = tasks.length ? table(['Task', 'State', 'Created', 'Completed', 'Duration'], tasks.map(task => `
+      <tr>
+        <td class="mono">${e(idOf(task))}</td>
+        <td>${badge(stateOf(task, 'tasks'))}</td>
+        <td>${date(task.status?.creation_time)}</td>
+        <td>${date(task.status?.completion_time)}</td>
+        <td title="Elapsed time from task creation to completion">${e(taskDuration(task.status))}</td>
+      </tr>`)) : empty(page === 1 ? 'No tasks yet' : 'No tasks on this page', page === 1 ? 'Tasks submitted to this session will appear here.' : 'Use Previous tasks to return to an earlier page.', 'sessions');
     target.insertAdjacentHTML('beforeend', `<div class="pagination task-pagination"><button class="button small" id="tasks-previous" ${page === 1 ? 'disabled' : ''}>← Previous tasks</button><span>Page ${page}</span><button class="button small" id="tasks-next" ${data.hasNext ? '' : 'disabled'}>Next tasks →</button></div>`);
     $('#tasks-previous').addEventListener('click', () => loadTasks(row, page - 1));
     $('#tasks-next').addEventListener('click', () => loadTasks(row, page + 1));

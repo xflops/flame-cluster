@@ -42,7 +42,7 @@ async function fixture(page, options={}) {
       return route.fulfill({json:{session:data.sessions[0]||null}});
     }
     const currentPage=Number(url.searchParams.get('page')||1),pageSize=Number(url.searchParams.get('pageSize')||12);
-    if(resource==='tasks') return route.fulfill({json:{items:[{metadata:{id:options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`},status:{state:2,creation_time:1794614400000}}],page:currentPage,pageSize,total:null,hasNext:currentPage===1}});
+    if(resource==='tasks') return route.fulfill({json:{items:[{metadata:{id:options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`},status:{state:2,creation_time:1794614400000,completion_time:currentPage===1?1794614401250:null}}],page:currentPage,pageSize,total:null,hasNext:currentPage===1}});
     if(options.fail) return route.fulfill({status:502,json:{error:'FLM is unavailable'}});
     if(!Object.hasOwn(data,resource)) return route.fulfill({status:404,json:{error:'Unknown resource'}});
     if(options.delays?.[resource]) await new Promise(resolve=>setTimeout(resolve,options.delays[resource]));
@@ -223,9 +223,12 @@ test('session task drawer retains task paging and progress',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');
   await expect(page.getByRole('progressbar').first()).toHaveAttribute('aria-valuenow','76');
   await page.getByRole('button',{name:'session-42',exact:true}).click();
-  await expect(page.getByRole('dialog')).toContainText('task-1');
+  const tasks=page.locator('#tasks');
+  await expect(tasks.getByRole('columnheader',{name:'Duration',exact:true})).toBeVisible();
+  await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('1.25 s');
   await page.getByRole('button',{name:'Next tasks →'}).click();
-  await expect(page.getByRole('dialog')).toContainText('task-2');
+  await expect(tasks).toContainText('task-2');
+  await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('-');
   await expect(page.getByRole('button',{name:'Next tasks →'})).toBeDisabled();
 });
 test('session commands use direct FLM actions and update available commands',async({page})=>{

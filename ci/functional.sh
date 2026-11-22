@@ -130,11 +130,13 @@ PY
 session="$(cat "$runtime/session-id")"
 wait_session_state "$session" 1
 jq -e --arg id "$session" 'any(.items[]; .metadata.id==$id and .spec.application=="flmping" and .status.succeed==4 and .status.failed==0 and .status.pending==0 and .status.running==0)' "$runtime/sessions.json" >/dev/null
+get "/api/connections/$flame_name/sessions/$session" > "$runtime/session-detail.json"
+jq -e --arg id "$session" '.metadata.id==$id and .spec.application=="flmping" and .status.succeed==4 and (.status.events|type)=="array" and .spec.common_data==null' "$runtime/session-detail.json" >/dev/null
 for page in 1 2; do
-  get "/api/sessions/$session?page=$page&pageSize=2" > "$runtime/tasks-$page.json"
-  jq -e --arg id "$session" --argjson page "$page" '.session.metadata.id==$id and (.tasks | .page==$page and .pageSize==2 and .total==4 and (.items|length)==2 and .hasNext==($page==1) and all(.items[]; .status.state==2 and .status.completion_time>0 and .spec.input==null and .spec.output==null))' "$runtime/tasks-$page.json" >/dev/null
+  get "/api/connections/$flame_name/sessions/$session/tasks?page=$page&pageSize=2" > "$runtime/tasks-$page.json"
+  jq -e --argjson page "$page" '.page==$page and .pageSize==2 and .total==4 and (.items|length)==2 and .hasNext==($page==1) and all(.items[]; .status.state==2 and .status.completion_time>0 and .spec.input==null and .spec.output==null)' "$runtime/tasks-$page.json" >/dev/null
 done
-jq -es '[.[].tasks.items[].metadata.id] | length==4 and (unique|length)==4' "$runtime/tasks-1.json" "$runtime/tasks-2.json" >/dev/null
+jq -es '[.[].items[].metadata.id] | length==4 and (unique|length)==4' "$runtime/tasks-1.json" "$runtime/tasks-2.json" >/dev/null
 
 # Separate fresh sessions exercise real mutations and preserve browser isolation.
 new_session() { worker_cli create --app flmping --resreq cpu=1,mem=128m | sed -n 's/^Session <\([^>]*\)> was created\.$/\1/p'; }
@@ -249,8 +251,8 @@ done
 wait_cluster_ready
 wait_worker_ready "$runtime/flmlet-after-control-plane-rollout.json"
 wait_session_state "$session" 1
-get "/api/sessions/$session?page=1&pageSize=100" > "$runtime/tasks-after-restart.json"
-jq -e '.tasks | .total==4 and (.items|length)==4 and all(.items[]; .status.state==2)' "$runtime/tasks-after-restart.json" >/dev/null
+get "/api/connections/$flame_name/sessions/$session/tasks?page=1&pageSize=100" > "$runtime/tasks-after-restart.json"
+jq -e '.total==4 and (.items|length)==4 and all(.items[]; .status.state==2)' "$runtime/tasks-after-restart.json" >/dev/null
 get '/api/applications?pageSize=100' | jq -e 'any(.items[]; .metadata.name=="flame-ci-ping")' >/dev/null
 # Verify real host idempotence, rolling configuration and credential revocation.
 bash ci/test-flmlet.sh "$runtime"
@@ -278,7 +280,7 @@ import json,sys
 from pathlib import Path
 r=Path(sys.argv[1])
 nodes=json.loads((r/'nodes.json').read_text())
-tasks=json.loads((r/'tasks-after-restart.json').read_text())['tasks']
+tasks=json.loads((r/'tasks-after-restart.json').read_text())
 flamepy=json.loads((r/'flamepy-app-results.json').read_text())
 flmlet=json.loads((r/'flmlet-results.json').read_text())
 browser=json.loads((r/'live-browser-results.json').read_text())['stats']

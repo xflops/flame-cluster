@@ -80,7 +80,7 @@ test.describe('live Flame deployment', () => {
   test.afterEach(async ({ page }) => {
     const paths = requests.get(page);
     expect(paths.length, 'the browser must request live console APIs').toBeGreaterThan(0);
-    const scopedPath = /^\/api\/connections\/[^/]+\/(?:connection|nodes|applications|executors|sessions(?:\/[^/]+(?:\/actions\/(?:suspend|resume|close|delete))?)?)$/;
+    const scopedPath = /^\/api\/connections\/[^/]+\/(?:connection|nodes|applications|executors|sessions(?:\/[^/]+(?:\/(?:tasks|actions\/(?:suspend|resume|close|delete)))?)?)$/;
     expect(paths.every(path => path === '/api/connections' || scopedPath.test(path)), JSON.stringify(paths)).toBe(true);
     expect(paths.some(path => /\/(?:dashboard|clusters)(?:\/|$)/.test(path)), 'no legacy resource paths').toBe(false);
     expect(failures.get(page), 'all live browser API responses must succeed').toEqual([]);
@@ -163,11 +163,16 @@ test.describe('live Flame deployment', () => {
     await expect(row.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
     const connectionID = await page.getByRole('combobox', {name:'Cluster', exact:true}).inputValue();
     const detailPath = `/api/connections/${encodeURIComponent(connectionID)}/sessions/${encodeURIComponent(completedSession)}`;
-    const loaded = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === detailPath);
+    const requestPath = path => page.waitForResponse(response =>
+      response.request().method() === 'GET' && new URL(response.url()).pathname === path);
+    const detailLoaded = requestPath(detailPath);
+    const tasksLoaded = requestPath(detailPath + '/tasks');
     await row.getByRole('button', { name: completedSession, exact: true }).click();
-    const response = await loaded;
-    expect(response.ok()).toBe(true);
-    const {session: detail, tasks} = await response.json();
+    const [detailResponse, taskResponse] = await Promise.all([detailLoaded, tasksLoaded]);
+    expect(detailResponse.ok()).toBe(true);
+    expect(taskResponse.ok()).toBe(true);
+    const detail = await detailResponse.json();
+    const tasks = await taskResponse.json();
     expect(detail.metadata.id).toBe(completedSession);
     expect(detail.status.events).toEqual(expect.any(Array));
     expect(tasks.total).toBe(4);

@@ -1,13 +1,8 @@
-//! A canonical session snapshot and one native task metadata page.
-use crate::{
-    AppState,
-    connection::ApiError,
-    listing::{PageQuery, read_task_page, validate_session_id, validate_task_query},
-    rpc::GetSessionRequest,
-};
+//! A canonical session snapshot, including lifecycle events.
+use crate::{AppState, connection::ApiError, listing::validate_session_id, rpc::GetSessionRequest};
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
 };
 use serde_json::{Value, json};
@@ -15,12 +10,9 @@ use serde_json::{Value, json};
 pub(crate) async fn detail(
     State(mut state): State<AppState>,
     Path(id): Path<String>,
-    Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, ApiError> {
     validate_session_id(&id)?;
-    validate_task_query(&query)?;
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        // Resolve the session first so its canonical not-found result takes priority.
         let session = state
             .client
             .get_session(GetSessionRequest {
@@ -38,9 +30,8 @@ pub(crate) async fn detail(
                 )
             })?
             .into_inner();
-        let tasks = read_task_page(state.client, id, &query).await?;
-        // The wire types deliberately omit common_data, credentials, and task payloads.
-        Ok::<_, ApiError>(json!({"session":session,"tasks":tasks}))
+        // The session wire type deliberately omits common_data and credentials.
+        Ok::<_, ApiError>(json!(session))
     })
     .await
     .map_err(|_| {

@@ -327,12 +327,6 @@ h1 {
   padding:5px 9px;
   font-size:10px
 }
-.metrics {
-  display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
-  gap:16px;
-  margin-bottom:27px
-}
 .metric {
   background:#fff;
   border:1px solid var(--border);
@@ -824,9 +818,6 @@ dialog::backdrop {
   .page-heading {
     margin-top:36px
   }
-  .metrics {
-    gap:22px
-  }
   .metric {
     padding:24px
   }
@@ -958,11 +949,6 @@ dialog::backdrop {
     width:auto;
     text-align:left;
     margin-right:auto
-  }
-  .metrics {
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    gap:10px;
-    margin-bottom:18px
   }
   .metric-value {
     font-size:26px;

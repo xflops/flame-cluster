@@ -49,11 +49,14 @@ async function fixture(page, options={}) {
       if(!session) return route.fulfill({status:404,json:{error:'Unknown session'}});
       Object.assign(session.spec,options.sessionSpec?.[selected.id]);
       session.status.events = options.events?.[selected.id] || [];
+      return route.fulfill({json:session});
+    }
+    if(resource==='tasks' && segments[4]==='sessions') {
       const id = options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`;
       const created = 1794614400000;
       const items = [{metadata:{id},status:{state:2,creation_time:created,completion_time:currentPage===1?created+1250:null}}];
       if(currentPage===1) items.push({metadata:{id:`${id}-same-second`},status:{state:2,creation_time:created,completion_time:created}});
-      return route.fulfill({json:{session,tasks:{items,page:currentPage,pageSize,total:3,hasNext:currentPage===1}}});
+      return route.fulfill({json:{items,page:currentPage,pageSize,total:3,hasNext:currentPage===1}});
     }
     if(options.fail) return route.fulfill({status:502,json:{error:'FLM is unavailable'}});
     if(!Object.hasOwn(data,resource)) return route.fulfill({status:404,json:{error:'Unknown resource'}});
@@ -249,8 +252,8 @@ test('session task drawer retains task paging and progress',async({page})=>{
   await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('-');
   await expect(page.getByRole('button',{name:'Next tasks →'})).toBeDisabled();
 });
-test('session drawer loads and refreshes session fields, tasks, and events through one URL',async({page})=>{
-  const path=scoped('sessions/session-42');
+test('session drawer separates session fields and events from task pagination',async({page})=>{
+  const path=scoped('sessions/session-42'),tasksPath=path+'/tasks';
   const requests=[];
   page.on('request',request=>{
     const url=new URL(request.url());
@@ -261,10 +264,14 @@ test('session drawer loads and refreshes session fields, tasks, and events throu
     {creation_time:1794614401000,code:203,message:'Worker allocated <worker>'},
   ]};
   const sessionSpec={training:{}};
-  await fixture(page,{events:eventsByCluster,sessionSpec});
+  const detail=deferred();
+  await fixture(page,{events:eventsByCluster,sessionSpec,wait:{'training/session-detail':detail.promise}});
   await page.goto('/#/sessions');
   await page.getByRole('button',{name:'session-42',exact:true}).click();
   const scheduling=page.getByRole('region',{name:'Scheduling'});
+  await expect(page.locator('#tasks')).toContainText('task-1');
+  await expect(scheduling).toHaveCount(0);
+  detail.resolve();
   await expect(scheduling.locator('dd')).toHaveText(['1','0','Unlimited','1','Cluster default']);
   const events=page.getByRole('region',{name:'Session events',exact:true});
   await expect(events.getByRole('columnheader')).toHaveText(['Time','Code','Message']);
@@ -273,13 +280,20 @@ test('session drawer loads and refreshes session fields, tasks, and events throu
   await expect(page.locator('#tasks')).toContainText('task-1');
   await page.getByRole('button',{name:'Next tasks →'}).click();
   await expect(page.locator('#tasks')).toContainText('task-2');
+  expect(requests.filter(request=>request===path)).toHaveLength(1);
+  expect(requests.filter(request=>request.startsWith(tasksPath))).toEqual([
+    `${tasksPath}?page=1&pageSize=12`,`${tasksPath}?page=2&pageSize=12`
+  ]);
   eventsByCluster.training=[];
   sessionSpec.training.priority=7;
   await page.getByRole('button',{name:'Refresh details'}).click();
   await expect(events).toContainText('No events yet.');
   await expect(scheduling.locator('dd').first()).toHaveText('7');
   await expect(page.locator('#tasks')).toContainText('task-1');
-  expect(requests).toEqual([`${path}?page=1&pageSize=12`,`${path}?page=2&pageSize=12`,`${path}?page=1&pageSize=12`]);
+  expect(requests.filter(request=>request===path)).toHaveLength(2);
+  expect(requests.filter(request=>request.startsWith(tasksPath))).toEqual([
+    `${tasksPath}?page=1&pageSize=12`,`${tasksPath}?page=2&pageSize=12`,`${tasksPath}?page=1&pageSize=12`
+  ]);
 });
 test('session commands use direct FLM actions and update available commands',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');page.on('dialog',dialog=>dialog.accept());
@@ -403,15 +417,15 @@ test('late connection and resource responses cannot overwrite the selected Flame
 test('switching Flames cancels session details and ignores late responses',async({page})=>{
   const pending=deferred();
   await ignoreTrainingAbort(page);
-  await fixture(page,{...multiple,wait:{'training/session-detail':pending.promise}});
+  await fixture(page,{...multiple,wait:{'training/tasks':pending.promise}});
   await page.goto('/#/sessions');
-  const requested=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('sessions/session-42'));
+  const requested=page.waitForRequest(request=>new URL(request.url()).pathname===scoped('sessions/session-42/tasks'));
   await page.getByRole('button',{name:'session-42',exact:true}).click();await requested;
   await page.evaluate(()=>{const selector=document.querySelector('#connection-name');selector.value='production';selector.dispatchEvent(new Event('change'));});
   await expect(page.getByRole('dialog')).not.toBeVisible();
   await page.getByRole('button',{name:'prod-session',exact:true}).click();
   await expect(page.getByRole('dialog')).toContainText('production-task-1');
-  const late=page.waitForResponse(response=>new URL(response.url()).pathname===scoped('sessions/session-42'));
+  const late=page.waitForResponse(response=>new URL(response.url()).pathname===scoped('sessions/session-42/tasks'));
   pending.resolve();await (await late).finished();
   await expect(page.getByRole('dialog')).toContainText('production-task-1');
   await expect(page.getByRole('dialog')).not.toContainText('training-task');

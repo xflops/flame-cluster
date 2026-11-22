@@ -90,12 +90,11 @@ const date = value => {
 };
 const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
 const knownCapacity = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0;
+const formatCapacity = (key, value) => knownCapacity(value) ? (key === 'memory' ? bytes(value) : f(value)) : '-';
 function nodeCapacity(row) {
-  const capacity = row.status?.capacity;
-  const boxes = [['GPU', capacity?.gpu], ['CPU', capacity?.cpu], ['MEM', capacity?.memory]].map(([label, value]) => {
-    const formatted = knownCapacity(value) ? label === 'MEM' ? bytes(value) : f(value) : '-';
-    return `<span class="capacity-box"><span>${label}</span><strong>${e(formatted)}</strong></span>`;
-  }).join('');
+  const boxes = [['gpu', 'GPU'], ['cpu', 'CPU'], ['memory', 'MEM']].map(([key, label]) =>
+    `<span class="capacity-box"><span>${label}</span><strong>${e(formatCapacity(key, row.status?.capacity?.[key]))}</strong></span>`
+  ).join('');
   return `<span class="node-capacities">${boxes}</span>`;
 }
 function reportedUsage(row) {
@@ -150,7 +149,7 @@ function capacityTotals(nodes) {
   return resources.map(([key, label]) => {
     const readings = nodes.map(node => node.status?.capacity?.[key]).filter(knownCapacity);
     const sum = readings.reduce((total, value) => total + Number(value), 0);
-    const value = readings.length ? (key === 'memory' ? bytes(sum) : f(sum)) : '-';
+    const value = formatCapacity(key, readings.length ? sum : undefined);
     return `<section class="metric dashboard-capacity" aria-label="${label}"><h2>${label}</h2><div class="metric-value">${e(value)}</div><p>Reporting ${readings.length}/${nodes.length} nodes</p></section>`;
   }).join('');
 }
@@ -402,6 +401,12 @@ function openDetails(row) {
     if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
   } else if (state.view === 'nodes') {
     detail += properties([['Cluster', row.metadata?.namespace], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash]]);
+    const capacity = row.status?.capacity;
+    detail += '<section aria-label="Capacity"><h3>Capacity</h3>' + properties([
+      ['Total GPU', formatCapacity('gpu', capacity?.gpu)],
+      ['Total CPU', formatCapacity('cpu', capacity?.cpu)],
+      ['Total memory', formatCapacity('memory', capacity?.memory)],
+    ]) + '</section>';
     const usage = reportedUsage(row);
     detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([['CPU usage', usagePercent(usage.cpuPercent)], ['Memory usage', usageBytes(usage.memory)], ['GPU usage', gpuUsageText(usage.gpuDevices)]]) + '</section>';
     detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['Executor manager', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(serviceState(report?.activeState))}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));

@@ -214,7 +214,9 @@ test('nodes show overall readiness and capacity with service status in details',
   await expect(page.getByRole('dialog').getByRole('row').filter({hasText:'0000:03:00.0'}).getByRole('cell')).toHaveText(['0000:03:00.0','10de','1234','030000','-','0']);
   await expect(page.getByRole('dialog')).toContainText('Worker registered and services active');
   await expect(page.getByRole('dialog')).toContainText('192.168.3.8');
-  await expect(page.getByRole('dialog')).not.toContainText(/Memory capacity|Operating system/);
+  const capacity=page.getByRole('dialog').getByRole('region',{name:'Capacity',exact:true});
+  await expect(capacity.locator('dt')).toHaveText(['Total GPU','Total CPU','Total memory']);
+  await expect(capacity.locator('dd')).toHaveText(['0','8','16 GiB']);
 });
 test('session task drawer retains task paging and progress',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');
@@ -514,6 +516,7 @@ test('enrolled Pending workers appear before any service status and filters use 
   await expect(drawer).toContainText('192.168.3.30');
   await expect(drawer).not.toContainText(/Invalid Date/);
   await expect(drawer.getByText('0',{exact:true})).toHaveCount(0);
+  await expect(drawer.getByRole('region',{name:'Capacity',exact:true}).locator('dd')).toHaveText(['-','-','-']);
   await expect(drawer.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['-','-','-']);
   await page.getByRole('button',{name:'Close details'}).click();
   for(const [readiness,name] of [['Disabled','disabled-worker'],['Not ready','stale-worker'],['Ready','flm-worker-01'],['Pending','new-worker']]) {

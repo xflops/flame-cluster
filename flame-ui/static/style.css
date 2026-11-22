@@ -1030,6 +1030,20 @@ dialog::backdrop {
 }
 
 .readiness { display:inline-flex; align-items:center; gap:7px; white-space:nowrap }
+.dashboard-summary { display:grid; grid-template-columns:minmax(250px,1.5fr) repeat(3,minmax(120px,1fr)); gap:12px; padding:18px }
+.dashboard-summary h2 { margin:0 0 16px; font-size:13px; font-weight:600 }
+.dashboard-capacity p { font-size:11px; color:#667085; margin-bottom:0 }
+.dashboard-usage { padding:0 18px 18px }
+.dashboard-usage>h2 { margin:0 0 12px; font-size:14px }
+.usage-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px }
+.usage-metric h3 { margin:0 0 12px; font-size:13px }
+.usage-metric p { color:#667085; font-size:11px; margin-bottom:0 }
+@media(max-width:760px) { .usage-grid { grid-template-columns:minmax(0,1fr) } }
+@media(max-width:1100px) { .dashboard-summary { grid-template-columns:repeat(2,minmax(0,1fr)) } }
+@media(max-width:600px) { .dashboard-summary { grid-template-columns:minmax(0,1fr); padding:12px } .dashboard-usage { padding:0 12px 12px } }
+.node-capacities { display:inline-flex; align-items:center; gap:6px; white-space:nowrap }
+.capacity-box { display:inline-flex; align-items:center; gap:5px; border:1px solid #d9dee7; border-radius:4px; padding:3px 5px; line-height:1.1; font-size:9px; color:#667085 }
+.capacity-box strong { font-size:11px; font-weight:600; color:#344054; font-variant-numeric:tabular-nums }
 .ready-circle { display:inline-block; width:8px; height:8px; border-radius:50%; background:#94a3b8; flex-shrink:0 }
 .ready-circle.good { background:#16a34a }
 .ready-circle.bad { background:#dc2626 }
@@ -1088,7 +1102,14 @@ dialog::backdrop {
 /* Reserve the progress caption height so buttons align with the bar. */
 .session-actions { padding-bottom:0; display:flex; align-items:center; justify-content:flex-end; gap:6px; white-space:nowrap }
 
-.join-settings { padding:16px }
-.join-settings p { color:#4b5563; line-height:1.6 }
-.join-settings pre { padding:12px; background:#f8fafc; border:1px solid var(--border); border-radius:7px; white-space:pre-wrap; overflow-wrap:anywhere }
+.settings-card { padding:16px }
+.settings-card p { color:#4b5563; line-height:1.6 }
+.settings-card pre { padding:12px; background:#f8fafc; border:1px solid var(--border); border-radius:7px; white-space:pre-wrap; overflow-wrap:anywhere }
 #copy-status { margin-left:12px; font-size:12px }
+
+.settings-panel { background:transparent; border:0; box-shadow:none }
+.settings-panel .table-toolbar { display:none }
+.settings-grid { display:grid; gap:12px }
+.settings-card { background:#fff; border:1px solid var(--border); border-radius:10px; min-width:0 }
+.settings-card h3 { margin:0 0 8px; font-size:14px }
+.settings-card p { margin:8px 0 12px }

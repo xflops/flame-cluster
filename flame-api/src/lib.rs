@@ -227,12 +227,73 @@ pub struct FlameWorkerStatus {
     pub hostname: Option<String>,
     #[serde(default)]
     pub registered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<NodeCapacity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<NodeUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pci_devices: Option<Vec<NodePciDevice>>,
     #[serde(default)]
     pub cache_ready: bool,
     #[serde(default)]
     pub fem: HostServiceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_cache: Option<HostServiceStatus>,
+}
+
+/// Hardware capacity reported by the matched Ready FLM node. Unknown values stay null.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+pub struct NodeCapacity {
+    /// CPU cores.
+    #[serde(default)]
+    pub cpu: Option<u64>,
+    /// GPU count, including zero on hosts without GPUs.
+    #[serde(default)]
+    pub gpu: Option<u64>,
+    /// Memory in bytes.
+    #[serde(default)]
+    pub memory: Option<u64>,
+}
+
+/// Host measurements sampled by flmlet at the worker heartbeat.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeUsage {
+    /// Overall CPU utilization across logical CPUs, from 0 to 100.
+    #[serde(default)]
+    pub cpu_percent: Option<f64>,
+    #[serde(default)]
+    pub memory: Option<ByteUsage>,
+    #[serde(default)]
+    pub gpu_devices: Option<Vec<GpuUsage>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ByteUsage {
+    pub used_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// GPU utilization sampled from a local driver, keyed by its PCI address.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuUsage {
+    pub pci_address: String,
+    pub utilization_percent: u8,
+}
+
+/// A PCI device detected by flmlet on the worker host.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+pub struct NodePciDevice {
+    pub address: String,
+    pub vendor_id: String,
+    pub device_id: String,
+    pub class_id: String,
+    #[serde(default)]
+    pub driver: Option<String>,
+    #[serde(default)]
+    pub numa_node: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
@@ -273,6 +334,35 @@ mod schema_tests {
         assert!(gateway.get("serviceAnnotations").is_some());
     }
     #[test]
+    fn worker_capacity_is_optional_and_members_are_unsigned_nullable_values() {
+        let old = serde_json::to_value(FlameWorkerStatus::default()).unwrap();
+        assert!(old.get("capacity").is_none());
+        assert!(
+            serde_json::from_value::<FlameWorkerStatus>(old)
+                .unwrap()
+                .capacity
+                .is_none()
+        );
+        let capacity = NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: None,
+        };
+        assert_eq!(
+            serde_json::to_value(capacity).unwrap(),
+            serde_json::json!({"cpu":8,"gpu":0,"memory":null})
+        );
+        let crd = serde_json::to_value(FlameWorker::crd()).unwrap();
+        let fields = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]
+            ["properties"]["capacity"];
+        for field in ["cpu", "gpu", "memory"] {
+            assert_eq!(fields["properties"][field]["minimum"].as_f64(), Some(0.0));
+            assert_eq!(fields["properties"][field]["nullable"], true);
+        }
+        assert!(fields.get("required").is_none());
+    }
+
+    #[test]
     fn worker_crd_separates_sre_desired_state_and_observed_host_health() {
         let crd = serde_json::to_value(FlameWorker::crd()).unwrap();
         assert_eq!(crd["spec"]["group"], "flame.xflops.io");
@@ -303,6 +393,7 @@ mod schema_tests {
         for field in [
             "fem",
             "registered",
+            "capacity",
             "cacheReady",
             "configHash",
             "lastHeartbeatTime",

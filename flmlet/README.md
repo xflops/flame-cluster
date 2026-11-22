@@ -9,6 +9,13 @@ object cache using systemctl. It stops and disables the object cache when it is
 not requested.
 Flmlet does not poll registries, install Kubernetes, or request Kubernetes CSRs.
 
+During reconciliation, flmlet uses the existing FLM node-inventory check to report
+`FlameWorker.status.capacity` for its actual hostname when that node is Ready.
+CPU is a core count, GPU is a device count (including zero), and memory is bytes.
+Missing or malformed measurements remain unknown; they do not prevent registration.
+Capacity clears when registration is lost, the worker is disabled, or reconciliation
+fails and its status can still be written. The UI reads this worker status.
+
 The operator renews a cluster join token every fifteen minutes. Copy the current
 join command from **Settings → Join a node** in the UI and run it on the prepared
 worker host. The command fetches the hosted installer; no local `setup.sh` is
@@ -116,6 +123,19 @@ the existing runtime without looking for updates.
 Readiness requires active services, the actual hostname Ready in FLM node
 inventory, and TCP cache readiness when FOC is managed. Heartbeats and the
 applied configuration hash are reported on `FlameWorker.status`.
+
+Flmlet detects PCI devices from the worker's Linux sysfs and publishes them as
+`FlameWorker.status.pciDevices`. Detection does not require lspci, an updated
+Flame runtime, or successful worker registration. An empty inventory is
+reported as an empty list. If sysfs is unavailable, the field is absent.
+
+Flmlet also reports host CPU, memory, and GPU utilization in
+`FlameWorker.status.usage` with each worker heartbeat. CPU uses Linux procfs
+counter deltas, treating idle and I/O wait as idle. CPU is unavailable until a
+second valid sample. Memory used is `MemTotal - MemAvailable`, in bytes. GPU
+utilization is read per device from NVIDIA's `nvidia-smi` when installed and
+from AMD's `gpu_busy_percent` sysfs attribute when supported. Unavailable GPU
+readings are omitted. Missing measurements do not affect readiness.
 
 Confirmed deletion/disable or explicit Kubernetes 401/403 revocation stops and
 disables only this worker's owned FEM/FOC services. A missing referenced cluster

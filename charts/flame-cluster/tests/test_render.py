@@ -91,8 +91,9 @@ class Render(unittest.TestCase):
         self.assertEqual(namespaces.count('meta.helm.sh/release-namespace: "team-a"'), 2)
         rbac = render(values, 'rbac.yaml').stdout
         self.assertEqual(rbac.count('kind: Role\n'), 4) # Role resources and RoleBinding roleRef.
-        self.assertEqual(rbac.count('    verbs: [get]'), 2)
+        self.assertEqual(rbac.count('    verbs: [get]'), 4)
         self.assertEqual(rbac.count('    resources: [secrets]'), 2)
+        self.assertEqual(rbac.count('    resources: [configmaps]'), 2)
         self.assertEqual(rbac.count('  - apiGroups: [flame.xflops.io]'), 2)
         self.assertEqual(rbac.count('    resources: [flameworkers]'), 2)
         self.assertEqual(rbac.count('    verbs: [get, list]'), 2)
@@ -100,6 +101,7 @@ class Render(unittest.TestCase):
         self.assertEqual(rbac.count('    namespace: team-a'), 2)
         for name in ['flame-1', 'flame-2']:
             self.assertIn(f'resourceNames: ["{name}-join", "{name}-client"]', rbac)
+            self.assertIn(f'resources: [configmaps]\n    resourceNames: ["{name}-config"]\n    verbs: [get]', rbac)
         for forbidden in ['ClusterRole', 'verbs: [list]', 'create', 'update', 'delete', 'watch', '*', '-control-plane-tls']:
             self.assertNotIn(forbidden, rbac)
         values['flames'][0]['namespace'] = 'custom-flame-ns'

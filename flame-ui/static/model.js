@@ -1,4 +1,5 @@
 export const views = {
+  dashboard: { title: 'Dashboard', description: 'Node readiness and reported capacity for your cluster.', states: [] },
   nodes: { title: 'Nodes', description: 'Enrolled workers and their reported status.', states: ['Pending', 'Ready', 'Not ready', 'Disabled', 'Deleting'] },
   executors: { title: 'Executors', description: 'See where application services are running.', states: ['Unknown', 'Void', 'Idle', 'Binding', 'Bound', 'Unbinding', 'Releasing', 'Released'] },
   applications: { title: 'Applications', description: 'Your services and runtimes, ready for work.', states: ['Enabled', 'Disabled'] },
@@ -23,5 +24,5 @@ export const stateOf = (row, kind) => kind === 'nodes' ? row.readiness || 'Pendi
 export const shim = value => ({ 0: 'Host', 1: 'Wasm', 3: 'CRI' }[value] || 'Unknown');
 export function parseRoute(hash) {
   const view = hash.replace(/^#\/?/, '');
-  return Object.hasOwn(views, view) ? view : 'applications';
+  return Object.hasOwn(views, view) ? view : 'dashboard';
 }

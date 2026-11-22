@@ -1597,3 +1597,145 @@ async fn worker_inventory_errors_and_incomplete_or_invalid_chunks_never_return_p
         }
     }
 }
+
+#[tokio::test]
+async fn connection_configuration_reads_only_the_selected_namespaced_configmap() {
+    use std::sync::{Arc, Mutex};
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let captured = paths.clone();
+    let client = kube::Client::new(
+        tower::service_fn(move |request: Request<kube::client::Body>| {
+            assert_eq!(request.method(), "GET");
+            let path = request.uri().path().to_owned();
+            let number = match path.as_str() {
+                "/api/v1/namespaces/team-a/configmaps/training-config" => 1,
+                "/api/v1/namespaces/team-b/configmaps/inference-config" => 2,
+                _ => panic!("only selected ConfigMap GETs are permitted"),
+            };
+            captured.lock().unwrap().push(path);
+            let yaml = format!(
+                "cluster:\n  name: flame-{number}\n  schedule_interval: 100\n  tls:\n    key_file: /etc/flame/control-plane-tls/tls.key\n  executors:\n    shims: [host, cri]\ncache:\n  endpoint: grpc://flame-{number}-cache-bootstrap:9090\n"
+            );
+            async move {
+                Ok::<_, std::convert::Infallible>(axum::http::Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"apiVersion":"v1","kind":"ConfigMap","data":{"flame-cluster.yaml":yaml,"other":"DO_NOT_EXPOSE_OTHER_ENTRIES"}}).to_string())).unwrap())
+            }
+        }),
+        "management",
+    );
+    let mut connections = Vec::new();
+    for (id, namespace, name) in [
+        ("first", "team-a", "training"),
+        ("second", "team-b", "inference"),
+    ] {
+        let mut config = ConnectionConfig::new("http://127.0.0.1:9");
+        config.namespace = Some(namespace.into());
+        config.name = Some(name.into());
+        connections.push((
+            id.into(),
+            AppState::connect_with_kubernetes(config, Some(client.clone())).unwrap(),
+        ));
+    }
+    connections.push((
+        "standalone".into(),
+        AppState::connect_with_kubernetes(
+            ConnectionConfig::new("http://127.0.0.1:9"),
+            Some(client),
+        )
+        .unwrap(),
+    ));
+    let app = fleet_router(connections).unwrap();
+    for (uri, number) in [
+        ("/api/connection", 1),
+        (
+            "/api/connections/second/connection?namespace=team-a&name=training",
+            2,
+        ),
+    ] {
+        let (status, metadata) = get(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            metadata["configuration"],
+            json!({
+                "cluster":{"name":format!("flame-{number}"),"schedule_interval":100,"tls":{"key_file":"/etc/flame/control-plane-tls/tls.key"},"executors":{"shims":["host","cri"]}},
+                "cache":{"endpoint":format!("grpc://flame-{number}-cache-bootstrap:9090")}
+            })
+        );
+        assert!(metadata.get("configurationError").is_none());
+        assert!(!metadata.to_string().contains("DO_NOT_EXPOSE_OTHER_ENTRIES"));
+    }
+    let (_, standalone) = get(app.clone(), "/api/connections/standalone/connection").await;
+    assert!(standalone.get("configuration").is_none());
+    assert!(standalone.get("configurationError").is_none());
+    let (_, catalog) = get(app, "/api/connections").await;
+    assert!(!catalog.to_string().contains("configuration"));
+    assert_eq!(
+        paths.lock().unwrap().as_slice(),
+        [
+            "/api/v1/namespaces/team-a/configmaps/training-config",
+            "/api/v1/namespaces/team-b/configmaps/inference-config",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn unavailable_or_invalid_configuration_preserves_healthy_connection_metadata() {
+    for (status, yaml) in [
+        (StatusCode::NOT_FOUND, None),
+        (StatusCode::FORBIDDEN, None),
+        (StatusCode::OK, None),
+        (
+            StatusCode::OK,
+            Some("cluster: [PRIVATE_PARSE_ERROR".to_owned()),
+        ),
+        (StatusCode::OK, Some("PRIVATE_SCALAR".to_owned())),
+        (StatusCode::OK, Some("- PRIVATE_SEQUENCE".to_owned())),
+        (
+            StatusCode::OK,
+            Some(format!("cluster: {}", "x".repeat(1024 * 1024))),
+        ),
+    ] {
+        let client = kube::Client::new(
+            tower::service_fn(move |request: Request<kube::client::Body>| {
+                assert_eq!(request.method(), "GET");
+                assert_eq!(
+                    request.uri().path(),
+                    "/api/v1/namespaces/team-a/configmaps/training-config"
+                );
+                let body = if status == StatusCode::OK {
+                    json!({"apiVersion":"v1","kind":"ConfigMap","data":yaml.as_ref().map(|yaml| json!({"flame-cluster.yaml":yaml}))})
+                } else {
+                    json!({"apiVersion":"v1","kind":"Status","status":"Failure","message":"PRIVATE_API_ERROR","reason":"Forbidden","code":status.as_u16()})
+                };
+                async move {
+                    Ok::<_, std::convert::Infallible>(
+                        axum::http::Response::builder()
+                            .status(status)
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                }
+            }),
+            "management",
+        );
+        let mut config = ConnectionConfig::new("http://127.0.0.1:9");
+        config.namespace = Some("team-a".into());
+        config.name = Some("training".into());
+        let (status, metadata) = get(
+            router(AppState::connect_with_kubernetes(config, Some(client)).unwrap()),
+            "/api/connection",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(metadata["endpoint"], "http://127.0.0.1:9");
+        assert_eq!(metadata["displayName"], "Flame");
+        assert!(metadata.get("configuration").is_none());
+        assert_eq!(
+            metadata["configurationError"],
+            "The selected Flame's session-manager configuration is unavailable. Refresh and retry."
+        );
+        assert!(!metadata.to_string().contains("PRIVATE"));
+    }
+}

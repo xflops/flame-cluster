@@ -31,6 +31,7 @@ impl FakeHost {
         let mut host = Self {
             cache_ready: true,
             reported_version: "v0.8.0".into(),
+            missing: BTreeSet::from([PathBuf::from("/usr/bin/nvidia-smi")]),
             registration: json!({"items":[{"hostname":"actual-host","name":"unrelated-id","state":"Ready"}]}),
             ..Default::default()
         };
@@ -651,12 +652,17 @@ fn registration_checks_later_native_pages_and_matches_actual_hostname() {
     host.node_pages.insert(1,json!({"items":(0..100).map(|i|json!({"hostname":format!("other-{i}"),"state":"Ready"})).collect::<Vec<_>>()}));
     host.node_pages.insert(
         2,
-        json!({"items":[{"name":"node-id","hostname":"actual-host","state":"Ready"}]}),
+        json!({"items":[{"name":"node-id","hostname":"actual-host","state":"Ready", "cpu":16,"gpu":0,"memory":34359738368u64}]}),
     );
-    assert!(
-        run(&mut host, &settings(), &worker(), &cluster())
-            .unwrap()
-            .ready
+    let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    assert!(outcome.ready);
+    assert_eq!(
+        outcome.status.unwrap().capacity,
+        Some(flame_api::NodeCapacity {
+            cpu: Some(16),
+            gpu: Some(0),
+            memory: Some(34359738368),
+        })
     );
     assert_eq!(
         host.calls
@@ -1221,4 +1227,227 @@ fn partial_normalization_during_upgrade_reinstalls_even_when_owned_drop_ins_surv
     }
     assert!(!flmlet::configure(&mut host, &settings, &worker(), &cluster).unwrap());
     assert_eq!(host.bootstraps.len(), 3);
+}
+
+#[test]
+fn capacity_uses_only_matching_ready_node_and_preserves_unknown_values() {
+    for (capacity, expected) in [
+        (
+            json!({"cpu":8,"gpu":0,"memory":4096}),
+            Some(json!({"cpu":8,"gpu":0,"memory":4096})),
+        ),
+        (json!({"cpu":-1,"gpu":"2","memory":1.5}), None),
+        (
+            json!({"cpu":8,"gpu":null,"memory":false}),
+            Some(json!({"cpu":8,"gpu":null,"memory":null})),
+        ),
+        (json!({}), None),
+        (Value::Null, None),
+    ] {
+        let mut host = FakeHost::healthy();
+        host.registration = json!({"items":[
+            {"hostname":"other-host","state":"Ready","capacity":{"cpu":999,"gpu":999,"memory":999}},
+            {"spec":{"hostname":"actual-host"},"status":{"state":1,"capacity":capacity}}
+        ]});
+        let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+        assert!(
+            outcome.ready,
+            "unknown capacity must not change registration"
+        );
+        assert_eq!(
+            outcome
+                .status
+                .unwrap()
+                .capacity
+                .map(|value| serde_json::to_value(value).unwrap()),
+            expected
+        );
+    }
+}
+
+#[test]
+fn stale_capacity_is_cleared_when_registration_is_lost_disabled_or_reconcile_fails() {
+    let mut worker = worker();
+    worker.status = Some(flame_api::FlameWorkerStatus {
+        capacity: Some(flame_api::NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: Some(4096),
+        }),
+        config_hash: "keep-existing-hash".into(),
+        ..Default::default()
+    });
+    let mut host = FakeHost::healthy();
+    host.registration = json!({"items":[
+        {"hostname":"other-host","state":"Ready","capacity":{"cpu":999}},
+        {"hostname":"actual-host","state":"NotReady","capacity":{"cpu":8}}
+    ]});
+    let status = run(&mut host, &settings(), &worker, &cluster())
+        .unwrap()
+        .status
+        .unwrap();
+    assert!(!status.registered);
+    assert!(status.capacity.is_none());
+    worker.spec.disabled = true;
+    assert!(
+        run(&mut host, &settings(), &worker, &cluster())
+            .unwrap()
+            .status
+            .unwrap()
+            .capacity
+            .is_none()
+    );
+    let failed = flmlet::failed_status(&worker, "inventory unavailable");
+    assert!(failed.capacity.is_none());
+    assert_eq!(failed.config_hash, "keep-existing-hash");
+}
+
+#[test]
+fn native_flat_node_capacity_matches_observed_flmctl_output() {
+    let mut host = FakeHost::healthy();
+    // Native list -n output uses top-level measurements, not a capacity object.
+    host.registration = json!([{
+        "name":"flm-worker-01", "hostname":"flm-worker-01", "state":"Ready",
+        "cpu":8, "memory":16613277696u64, "gpu":0
+    }]);
+    // This entry belongs to another actual hostname and must never supply capacity.
+    assert!(
+        run(&mut host, &settings(), &worker(), &cluster())
+            .unwrap()
+            .status
+            .unwrap()
+            .capacity
+            .is_none()
+    );
+    host.registration[0]["hostname"] = json!("actual-host");
+    let outcome = run(&mut host, &settings(), &worker(), &cluster()).unwrap();
+    assert!(outcome.ready);
+    assert_eq!(
+        outcome.status.unwrap().capacity,
+        Some(flame_api::NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: Some(16613277696),
+        })
+    );
+    // Wrapper values cannot override flat measurements, including malformed ones.
+    host.registration[0]["capacity"] = json!({"cpu":999,"gpu":999,"memory":999});
+    host.registration[0]["cpu"] = json!(-1);
+    let capacity = run(&mut host, &settings(), &worker(), &cluster())
+        .unwrap()
+        .status
+        .unwrap()
+        .capacity
+        .unwrap();
+    assert_eq!(
+        capacity,
+        flame_api::NodeCapacity {
+            cpu: None,
+            gpu: Some(0),
+            memory: Some(16613277696)
+        }
+    );
+}
+
+#[test]
+fn pci_inventory_comes_from_local_sysfs_without_registration() {
+    let mut host = FakeHost::healthy();
+    host.registration = json!([{
+        "hostname":"another-host", "state":"Ready",
+        "pci_devices":[{"address":"0000:99:00.0"}]
+    }]);
+    let report = |host: &mut FakeHost| {
+        let outcome = run(host, &settings(), &worker(), &cluster()).unwrap();
+        assert!(!outcome.ready);
+        outcome.status.unwrap().pci_devices
+    };
+    assert_eq!(report(&mut host), None);
+
+    let directory = PathBuf::from("/sys/bus/pci/devices");
+    host.files.insert(directory.clone(), vec![]);
+    assert_eq!(report(&mut host), Some(vec![]));
+
+    let device = directory.join("0000:03:00.0");
+    host.files.insert(device.clone(), vec![]);
+    for (name, value) in [
+        ("vendor", "0x10DE"),
+        ("device", "0x1234"),
+        ("class", "0x030000"),
+        ("uevent", "DRIVER=vfio-pci\nPCI_SLOT_NAME=0000:03:00.0\n"),
+        ("numa_node", "0\n"),
+    ] {
+        host.files
+            .insert(device.join(name), value.as_bytes().to_vec());
+    }
+    // A disappearing device cannot invalidate the rest of the inventory.
+    host.files.insert(directory.join("0000:04:00.0"), vec![]);
+    assert_eq!(
+        report(&mut host),
+        Some(vec![flame_api::NodePciDevice {
+            address: "0000:03:00.0".into(),
+            vendor_id: "10de".into(),
+            device_id: "1234".into(),
+            class_id: "030000".into(),
+            driver: Some("vfio-pci".into()),
+            numa_node: Some(0),
+        }])
+    );
+    host.files
+        .insert(device.join("numa_node"), b"-1\n".to_vec());
+    assert_eq!(report(&mut host).unwrap()[0].numa_node, None);
+}
+
+#[test]
+fn procfs_usage_reports_memory_before_cpu_and_recovers_after_missing_sample() {
+    let mut host = FakeHost::healthy();
+    let stat = PathBuf::from("/proc/stat");
+    host.files
+        .insert(stat.clone(), b"cpu 10 0 10 80 0 0 0 0".to_vec());
+    host.files.insert(
+        "/proc/meminfo".into(),
+        b"MemTotal: 100 kB\nMemAvailable: 75 kB".to_vec(),
+    );
+    let mut sampler = flmlet::usage::UsageSampler::default();
+
+    let first = sampler.sample(&mut host, &[]).unwrap();
+    assert_eq!(first.cpu_percent, None);
+    assert_eq!(first.memory.unwrap().used_bytes, 25 * 1024);
+    assert_eq!(first.gpu_devices, None);
+
+    host.files
+        .insert(stat.clone(), b"cpu 60 0 10 130 0 0 0 0".to_vec());
+    assert_eq!(
+        sampler.sample(&mut host, &[]).unwrap().cpu_percent,
+        Some(50.0)
+    );
+    host.files.remove(&stat);
+    assert_eq!(sampler.sample(&mut host, &[]).unwrap().cpu_percent, None);
+    host.files.insert(stat, b"cpu 90 0 10 160 0 0 0 0".to_vec());
+    assert_eq!(sampler.sample(&mut host, &[]).unwrap().cpu_percent, None);
+}
+
+#[test]
+fn amd_gpu_usage_reads_local_pci_utilization_and_preserves_zero() {
+    let mut host = FakeHost::healthy();
+    let path = PathBuf::from("/sys/bus/pci/devices/0000:01:00.0/gpu_busy_percent");
+    let devices = [flame_api::NodePciDevice {
+        address: "0000:01:00.0".into(),
+        vendor_id: "1002".into(),
+        device_id: "744c".into(),
+        class_id: "030000".into(),
+        driver: Some("amdgpu".into()),
+        numa_node: None,
+    }];
+    let mut sampler = flmlet::usage::UsageSampler::default();
+    assert!(sampler.sample(&mut host, &devices).is_none());
+    host.files.insert(path.clone(), b"0\n".to_vec());
+    assert_eq!(
+        sampler.sample(&mut host, &devices).unwrap().gpu_devices,
+        Some(vec![flame_api::GpuUsage {
+            pci_address: "0000:01:00.0".into(),
+            utilization_percent: 0,
+        }])
+    );
+    host.files.insert(path, b"101\n".to_vec());
+    assert!(sampler.sample(&mut host, &devices).is_none());
 }

@@ -1,6 +1,7 @@
 import { views, escapeHtml as e, number as n, formatNumber as f, bytes, nameOf, idOf, stateOf, shim, parseRoute } from './model.js';
 const $ = selector => document.querySelector(selector);
 const paths = {
+  dashboard: '<path d="M3 13a9 9 0 1 1 18 0v6H3zM12 13l4-5"/><circle cx="12" cy="13" r="1"/>',
   settings: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
   applications: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   sessions: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
@@ -14,7 +15,30 @@ const pageSize = 12;
 const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
 function resourceUrl() {
+  if (state.view === 'dashboard') return `${apiBase()}/nodes?page=1&pageSize=100`;
   return `${apiBase()}/${state.view}?${new URLSearchParams({ page: state.page + 1, pageSize, state: state.filter })}`;
+}
+async function dashboardInventory(url, signal) {
+  const items = [], names = new Set();
+  let total;
+  for (let page = 1; page <= 500; page++) {
+    const request = new URL(url, location.origin); request.searchParams.set('page', page);
+    const data = await json(request.pathname + request.search, signal);
+    if (!Array.isArray(data.items) || data.items.length > 100 || !Number.isSafeInteger(data.total) || data.total < 0
+      || typeof data.hasNext !== 'boolean' || total !== undefined && total !== data.total) throw new Error('Node inventory changed or is incomplete. Refresh to retry.');
+    total = data.total;
+    for (const node of data.items) {
+      const name = node.metadata?.name;
+      if (!name || names.has(name)) throw new Error('Node inventory changed or is incomplete. Refresh to retry.');
+      names.add(name); items.push(node);
+    }
+    if (!data.hasNext) {
+      if (items.length !== total) throw new Error('Node inventory changed or is incomplete. Refresh to retry.');
+      return {items, total};
+    }
+    if (!data.items.length || items.length >= total) break;
+  }
+  throw new Error('Node inventory exceeds the dashboard limit or is incomplete.');
 }
 async function loadConnections() {
   if (catalogController) return;
@@ -58,15 +82,84 @@ const badge = label => {
   const tone = ['Ready', 'Enabled', 'Succeeded', 'Applied'].includes(label) ? 'green' : ['Open', 'Running', 'Bound'].includes(label) ? 'blue' : ['Pending', 'Binding', 'Suspending', 'Releasing', 'Deferred', 'Reconciling', 'Stale'].includes(label) ? 'orange' : ['Failed', 'Not ready'].includes(label) ? 'red' : '';
   return `<span class="badge ${tone}">${e(label)}</span>`;
 };
-const readiness = label => `<span class="readiness"><span class="ready-circle ${label === 'Ready' ? 'good' : label === 'Not ready' ? 'bad' : ''}" aria-hidden="true"></span>${e(label)}</span>`;
+const readiness = label => `<span class="readiness" title="${e(label)}" role="img" aria-label="${e(label)}"><span class="ready-circle ${label === 'Ready' ? 'good' : 'bad'}" aria-hidden="true"></span><span>${e(label)}</span></span>`;
 const date = value => {
   if (!value) return '—';
   const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
   return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
+const knownCapacity = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0;
+const formatCapacity = (key, value) => knownCapacity(value) ? (key === 'memory' ? bytes(value) : f(value)) : '-';
+function nodeCapacity(row) {
+  const boxes = [['gpu', 'GPU'], ['cpu', 'CPU'], ['memory', 'MEM']].map(([key, label]) =>
+    `<span class="capacity-box"><span>${label}</span><strong>${e(formatCapacity(key, row.status?.capacity?.[key]))}</strong></span>`
+  ).join('');
+  return `<span class="node-capacities">${boxes}</span>`;
+}
+function reportedUsage(row) {
+  const age = Date.now() - Date.parse(row.status?.lastHeartbeatTime);
+  if (!Number.isFinite(age) || age < 0 || age > 120000) return {};
+  const usage = row.status?.usage;
+  const validNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const pair = value => value && Number.isSafeInteger(value.usedBytes) && value.usedBytes >= 0 && Number.isSafeInteger(value.totalBytes) && value.totalBytes >= 0 && value.usedBytes <= value.totalBytes ? value : undefined;
+  const addresses = new Set();
+  const gpuDevices = Array.isArray(usage?.gpuDevices) ? usage.gpuDevices.filter(device => {
+    const address = device?.pciAddress;
+    if (typeof address !== 'string' || !/^(?:[0-9a-f]{4}|[0-9a-f]{8}):[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$/i.test(address)
+      || !validNumber(device.utilizationPercent) || device.utilizationPercent > 100 || addresses.has(address.toLowerCase())) return false;
+    addresses.add(address.toLowerCase()); return true;
+  }) : [];
+  return {cpuPercent: validNumber(usage?.cpuPercent) && usage.cpuPercent <= 100 ? usage.cpuPercent : undefined,
+    memory: pair(usage?.memory), gpuDevices};
+}
+const usagePercent = value => value === undefined ? '-' : `${f(Number(value.toFixed(1)))}%`;
+const usageBytes = value => value ? `${bytes(value.usedBytes)} / ${bytes(value.totalBytes)}` : '-';
+const gpuUsageText = devices => devices?.length ? devices.map(device => `${device.pciAddress} · ${usagePercent(device.utilizationPercent)}`).join('; ') : '-';
+function average(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
+}
+
+function resourceUsageSummary(nodes) {
+  const readings = nodes.map(reportedUsage);
+  const cpu = readings.map(usage => usage.cpuPercent).filter(value => value !== undefined);
+  const memory = readings.map(usage => usage.memory).filter(Boolean);
+  const memoryTotals = memory.reduce((totals, reading) => ({
+    usedBytes: totals.usedBytes + reading.usedBytes,
+    totalBytes: totals.totalBytes + reading.totalBytes,
+  }), {usedBytes: 0, totalBytes: 0});
+  const gpu = readings.flatMap(usage => usage.gpuDevices || []);
+  const gpuNodes = readings.filter(usage => usage.gpuDevices?.length).length;
+  const metrics = [
+    ['GPU usage', usagePercent(average(gpu.map(device => device.utilizationPercent))),
+      `${gpu.length} reporting ${gpu.length === 1 ? 'GPU' : 'GPUs'}`, gpuNodes],
+    ['CPU usage', usagePercent(average(cpu)), 'Average across reporting nodes', cpu.length],
+    ['Memory usage', usageBytes(memory.length ? memoryTotals : undefined), 'Used / total', memory.length],
+  ];
+  const cards = metrics.map(([label, value, description, count]) => `
+    <section class="metric usage-metric" aria-label="${label}">
+      <h3>${label}</h3>
+      <div class="metric-value">${e(value)}</div>
+      <p>${description} · Reporting ${count}/${nodes.length} nodes</p>
+    </section>`).join('');
+  return `<section class="dashboard-usage" aria-label="Current usage"><h2>Current usage</h2><div class="usage-grid">${cards}</div></section>`;
+}
+function capacityTotals(nodes) {
+  const resources = [['gpu', 'Total GPU'], ['cpu', 'Total CPU'], ['memory', 'Total memory']];
+  return resources.map(([key, label]) => {
+    const readings = nodes.map(node => node.status?.capacity?.[key]).filter(knownCapacity);
+    const sum = readings.reduce((total, value) => total + Number(value), 0);
+    const value = formatCapacity(key, readings.length ? sum : undefined);
+    return `<section class="metric dashboard-capacity" aria-label="${label}"><h2>${label}</h2><div class="metric-value">${e(value)}</div><p>Reporting ${readings.length}/${nodes.length} nodes</p></section>`;
+  }).join('');
+}
+function dashboardContent(nodes) {
+  const total = nodes.length, ready = nodes.filter(node => stateOf(node, 'nodes') === 'Ready').length;
+  const other = total - ready, percentage = total ? ready * 100 / total : 0;
+  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacityTotals(nodes)}</div>${resourceUsageSummary(nodes)}`;
+}
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
-const cacheState = row => row.spec?.manageObjectCache === false ? 'Not managed' : row.status?.objectCache?.activeState;
+const serviceState = value => typeof value === 'string' && value ? value[0].toUpperCase() + value.slice(1) : value;
 const empty = (title, description, kind = state.view) => `<div class="empty">${icon(kind)}<h3>${e(title)}</h3><p>${e(description)}</p></div>`;
 function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th scope="col">${e(header)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`; }
 function resourceLink(row, index, subtitle = '', kind = state.view) {
@@ -154,7 +247,6 @@ function render() {
   renderNavigation();
   const view = views[state.view];
   const selected = state.connections?.find(connection => connection.id === state.connectionId);
-  const label = selected?.namespace || state.connection?.namespace || selected?.displayName || state.connection?.displayName || 'Flame';
   $('#connection-name').innerHTML = state.connections?.length
     ? state.connections.map(connection => `<option value="${e(connection.id)}">${e(connection.namespace || connection.displayName || connection.id)}</option>`).join('')
     : '<option>Loading Flames…</option>';
@@ -164,11 +256,14 @@ function render() {
   $('#page-title').textContent = view.title;
   $('#page-description').textContent = view.description;
   $('#breadcrumb-detail').textContent = view.title;
-  const settings = state.view === 'settings';
-  $('#section-title').textContent = settings ? 'Cluster connection' : `All ${view.title.toLowerCase()}`;
-  $('#row-count').hidden = settings;
-  $('.filters').hidden = settings;
-  $('.table-footer').hidden = settings;
+  const settings = state.view === 'settings', dashboard = state.view === 'dashboard';
+  $('.data-panel').classList.toggle('settings-panel', settings);
+  $('.data-panel').setAttribute('aria-label', settings ? 'Cluster settings' : 'Resource data');
+  $('#content').classList.toggle('settings-grid', settings);
+  $('#section-title').textContent = settings ? 'Cluster connection' : dashboard ? 'Overview' : `All ${view.title.toLowerCase()}`;
+  $('#row-count').hidden = settings || dashboard;
+  $('.filters').hidden = settings || dashboard;
+  $('.table-footer').hidden = settings || dashboard;
   const filter = $('#status-filter');
   filter.innerHTML = '<option value="">All states</option>' + view.states.map(s => `<option>${e(s)}</option>`).join('');
   filter.value = state.filter;
@@ -188,20 +283,18 @@ function render() {
     return;
   }
   if (settings) {
+    const configuration = state.connection?.configuration || window.FLAME_CLUSTER_CONFIGS?.[state.connectionId];
     $('#content').innerHTML = state.connection
-      ? table(['Setting', 'Value'], [
-        `<tr><td>Cluster</td><td>${e(label)}</td></tr>`,
-        `<tr><td>FLM endpoint</td><td>${e(state.connection.endpoint)}</td></tr>`,
-      ])
+      ? `<section class="settings-card" aria-label="Cluster configuration"><h3>Cluster configuration</h3><p class="mono">flame-cluster.yaml</p><pre><code id="cluster-config">${e(configuration ? JSON.stringify(configuration, null, 2) : 'Cluster configuration is unavailable.')}</code></pre></section>`
       : empty(errors.length ? 'Unable to load settings' : 'Connecting to Flame', errors.length ? 'Refresh to retry.' : 'Connection settings will appear here shortly.');
     const clientConfigAvailable = state.connection?.clientConfigAvailable ?? selected?.clientConfigAvailable;
-    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Client configuration"><h3>Client configuration</h3><p>${clientConfigAvailable
+    $('#content').insertAdjacentHTML('beforeend', `<section class="settings-card" aria-label="Client configuration"><h3>Client configuration</h3><p>${clientConfigAvailable
       ? `Download the Flame client configuration for ${e(selected?.namespace || selected?.displayName || state.connectionId)}.`
       : 'Client configuration is unavailable for this Flame.'}</p><button class="button" id="download-config" ${!clientConfigAvailable || state.downloading ? 'disabled' : ''}>${state.downloading ? 'Downloading…' : 'Download flame.yaml'}</button><p id="download-status" role="status">${e(state.downloadStatus)}</p></section>`);
     const downloadConnectionId = state.connectionId;
     $('#download-config').addEventListener('click', () => downloadClientConfig(downloadConnectionId));
     const join = state.join && Date.parse(state.join.expiresAt) > Date.now() ? state.join : null;
-    $('#content').insertAdjacentHTML('beforeend', `<section class="join-settings" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host. It downloads the installer; Flmlet installs and configures its Flame runtime.</p>${join
+    $('#content').insertAdjacentHTML('beforeend', `<section class="settings-card" aria-label="Join a node"><h3>Join a node</h3><p>Run this command on the worker host. It downloads the installer; Flmlet installs and configures its Flame runtime.</p>${join
       ? `<pre><code id="join-command">${e(join.command)}</code></pre><p>Expires ${e(new Date(join.expiresAt).toLocaleString())}. Refresh to get the latest command.</p><button class="button" id="copy-join">Copy join command</button><span id="copy-status" role="status"></span>`
       : `<p>${e(state.errors.join || (state.loading ? 'Loading join command…' : 'Join command unavailable. Refresh to retry.'))}</p>`}</section>`);
     $('#copy-join')?.addEventListener('click', async () => {
@@ -211,6 +304,10 @@ function render() {
       try { await navigator.clipboard.writeText(join.command); status.textContent = 'Copied'; }
       catch { status.textContent = 'Select and copy the command above.'; }
     });
+    return;
+  }
+  if (dashboard) {
+    $('#content').innerHTML = data ? dashboardContent(data.items) : empty(errors.length ? 'Unable to load dashboard' : 'Loading dashboard', errors.length ? 'Refresh to retry. No partial node totals are shown.' : 'Reading reported node inventory…');
     return;
   }
   const rows = data?.items || [], total = data?.total ?? rows.length;
@@ -231,8 +328,8 @@ function render() {
   } else if (state.view === 'sessions') {
     $('#content').innerHTML = table(['Session', 'State', 'Application', 'Task progress', 'Created', 'Actions'], displayed.map((row, i) => `<tr><td>${resourceLink(row, i)}</td><td>${badge(stateOf(row, 'sessions'))}</td><td>${e(row.spec?.application)}</td><td>${sessionProgress(row.status)}</td><td>${date(row.status?.creation_time)}</td><td>${sessionActions(row, i)}</td></tr>`));
   } else if (state.view === 'nodes') {
-    $('#content').innerHTML = table(['Node', 'Status', 'Address', 'FEM', 'Cache', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
-      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : undefined)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${e(row.spec?.address)}</td><td>${e(row.status?.fem?.activeState)}</td><td>${e(cacheState(row))}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
+    $('#content').innerHTML = table(['Node', 'Status', 'Capacity', 'Address', 'Runtime', 'Executor limit', 'Heartbeat'], displayed.map((row, i) =>
+      `<tr><td>${resourceLink(row, i, row.status?.hostname !== nameOf(row) ? row.status?.hostname : undefined)}</td><td>${readiness(stateOf(row, 'nodes'))}</td><td>${nodeCapacity(row)}</td><td>${e(row.spec?.address)}</td><td>${e(workerRuntimes(row))}</td><td>${e(row.spec?.maxExecutors)}</td><td>${date(row.status?.lastHeartbeatTime)}</td></tr>`
     ));
   } else {
     $('#content').innerHTML = table(['Executor', 'State', 'Node', 'Application', 'Session', 'CPU', 'Memory', ''], displayed.map((row, i) => `<tr><td>${resourceLink(row, i, '', 'executors')}</td><td>${badge(stateOf(row, 'executors'))}</td><td>${e(row.spec?.node)}</td><td>${e(row.spec?.application)}</td><td class="mono">${e(row.status?.session_id)}</td><td>${f(row.spec?.resreq?.cpu)}</td><td>${bytes(row.spec?.resreq?.memory)}</td><td class="chevron">›</td></tr>`));
@@ -254,9 +351,9 @@ async function refresh() {
   pollController = controller;
   const timer = setTimeout(() => controller.abort(), 22000);
   state.loading = true; render();
-  async function load(key, url, apply) {
+  async function load(key, url, apply, read = json) {
     try {
-      const data = await json(url, controller.signal);
+      const data = await read(url, controller.signal);
       if (generation !== revision) return;
       apply(data); delete state.errors[key];
       if (key !== 'connection' && key !== 'join') {
@@ -275,7 +372,7 @@ async function refresh() {
   const view = state.view;
   await Promise.allSettled([
     load('connection', `${apiBase()}/connection`, data => { state.connection = data; }),
-    ...(view === 'settings' ? [load('join', `${apiBase()}/join`, data => { state.join = data; })] : [load(view, resourceUrl(), data => { state.pages[view] = data; })]),
+    ...(view === 'settings' ? [load('join', `${apiBase()}/join`, data => { state.join = data; })] : [load(view, resourceUrl(), data => { state.pages[view] = data; }, view === 'dashboard' ? dashboardInventory : json)]),
   ]);
   clearTimeout(timer);
   if (generation !== revision) return;
@@ -304,7 +401,32 @@ function openDetails(row) {
     if (row.spec?.schema) detail += '<div class="drawer-section"><h3>Schema</h3></div><pre>' + e(JSON.stringify(row.spec.schema, null, 2)) + '</pre>';
   } else if (state.view === 'nodes') {
     detail += properties([['Cluster', row.metadata?.namespace], ['Address', row.spec?.address], ['Hostname', row.status?.hostname], ['Runtimes', workerRuntimes(row)], ['Executor limit', row.spec?.maxExecutors], ['Python version', row.spec?.pythonVersion], ['Manage object cache', yesNo(row.spec?.manageObjectCache)], ['Registered with Flame', yesNo(row.status?.registered)], ['Cache ready', yesNo(row.status?.cacheReady)], ['Heartbeat', date(row.status?.lastHeartbeatTime)], ['Installed version', row.status?.installedVersion], ['Config hash', row.status?.configHash]]);
-    detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['FEM', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(report?.activeState)}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
+    const capacity = row.status?.capacity;
+    detail += '<section aria-label="Capacity"><h3>Capacity</h3>' + properties([
+      ['Total GPU', formatCapacity('gpu', capacity?.gpu)],
+      ['Total CPU', formatCapacity('cpu', capacity?.cpu)],
+      ['Total memory', formatCapacity('memory', capacity?.memory)],
+    ]) + '</section>';
+    const usage = reportedUsage(row);
+    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([
+      ['GPU usage', gpuUsageText(usage.gpuDevices)],
+      ['CPU usage', usagePercent(usage.cpuPercent)],
+      ['Memory usage', usageBytes(usage.memory)],
+    ]) + '</section>';
+    detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['Executor manager', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(serviceState(report?.activeState))}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
+    const devices = row.status?.pciDevices;
+    detail += '<div class="drawer-section"><h3>PCI devices</h3></div>';
+    if (Array.isArray(devices) && devices.length) {
+      const fields = ['address', 'vendor_id', 'device_id', 'class_id', 'driver', 'numa_node'];
+      detail += table(['Address', 'Vendor ID', 'Device ID', 'Class ID', 'Driver', 'NUMA node'], devices.map(device =>
+        `<tr>${fields.map(field => {
+          const value = device?.[field];
+          return `<td>${e(value == null || value === '' ? '-' : value)}</td>`;
+        }).join('')}</tr>`
+      ));
+    } else {
+      detail += `<p class="detail-note">${Array.isArray(devices) ? 'No PCI devices reported.' : '-'}</p>`;
+    }
     if (row.status?.conditions?.length) detail += '<div class="drawer-section"><h3>Conditions</h3></div>' + table(['Condition', 'Status', 'Reason', 'Message'], row.status.conditions.map(condition => `<tr><td>${e(condition.type)}</td><td>${e(condition.status)}</td><td>${e(condition.reason)}</td><td>${e(condition.message)}</td></tr>`));
     if (!row.status || !Object.keys(row.status).length) detail += '<p class="detail-note">Worker status has not been reported yet.</p>';
   } else if (state.view === 'executors') {

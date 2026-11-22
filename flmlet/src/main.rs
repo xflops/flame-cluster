@@ -1,5 +1,5 @@
 use flame_api::{FlameCluster, FlameWorker};
-use flmlet::{Input, Settings, host::LocalHost};
+use flmlet::{Input, Settings, host::LocalHost, usage::UsageSampler};
 use kube::{
     Api, Client, ResourceExt,
     api::{Patch, PatchParams},
@@ -122,6 +122,15 @@ async fn api_error(cli: &Cli, error: kube::Error) -> Error {
     }
     error.into()
 }
+// JSON Merge Patch must explicitly clear unavailable inventory fields.
+fn status_merge_patch(status: &flame_api::FlameWorkerStatus) -> serde_json::Value {
+    let mut patch = json!({"status": status});
+    patch["status"]["capacity"] = json!(status.capacity);
+    patch["status"]["usage"] = json!(status.usage);
+    patch["status"]["pciDevices"] = json!(status.pci_devices);
+    patch
+}
+
 async fn patch_status(
     cli: &Cli,
     workers: &Api<FlameWorker>,
@@ -132,7 +141,7 @@ async fn patch_status(
         .patch_status(
             &worker.name_any(),
             &PatchParams::default(),
-            &Patch::Merge(json!({"status":status})),
+            &Patch::Merge(status_merge_patch(&status)),
         )
         .await
     {
@@ -141,7 +150,7 @@ async fn patch_status(
     Ok(())
 }
 
-async fn cycle(cli: &Cli, client: Client) -> Result<bool, Error> {
+async fn cycle(cli: &Cli, client: Client, sampler: &mut UsageSampler) -> Result<bool, Error> {
     let workers = Api::<FlameWorker>::namespaced(client.clone(), &cli.settings.namespace);
     let worker = match workers.get_opt(&cli.settings.worker).await {
         Ok(worker) => worker,
@@ -205,26 +214,39 @@ async fn cycle(cli: &Cli, client: Client) -> Result<bool, Error> {
     }
     let settings = cli.settings.clone();
     let observed = worker.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        flmlet::reconcile(
-            &mut LocalHost,
+    let mut next_sampler = *sampler;
+    let (result, usage, next_sampler) = tokio::task::spawn_blocking(move || {
+        let mut host = LocalHost;
+        let result = flmlet::reconcile(
+            &mut host,
             &settings,
             Input::Present {
                 worker: &observed,
                 cluster: cluster.as_ref(),
             },
-        )
+        );
+        let pci_devices = result
+            .as_ref()
+            .ok()
+            .and_then(|outcome| outcome.status.as_ref())
+            .and_then(|status| status.pci_devices.as_deref())
+            .unwrap_or_default();
+        let usage = next_sampler.sample(&mut host, pci_devices);
+        (result, usage, next_sampler)
     })
     .await?;
+    *sampler = next_sampler;
     let (status, ready) = match result {
         Ok(outcome) => (outcome.status, outcome.ready || disabled),
         Err(error) => {
-            let status = flmlet::failed_status(&worker, &error.to_string());
+            let mut status = flmlet::failed_status(&worker, &error.to_string());
+            status.usage = usage;
             patch_status(cli, &workers, &worker, status).await?;
             return Err(error.into());
         }
     };
-    if let Some(status) = status {
+    if let Some(mut status) = status {
+        status.usage = usage;
         patch_status(cli, &workers, &worker, status).await?;
     }
     Ok(ready)
@@ -239,8 +261,9 @@ async fn main() -> Result<(), Error> {
         return Ok(());
     };
     let client = client(cli.kubeconfig.as_ref()).await?;
+    let mut sampler = UsageSampler::default();
     loop {
-        let result = cycle(&cli, client.clone()).await;
+        let result = cycle(&cli, client.clone(), &mut sampler).await;
         if cli.once || cli.check || cli.configure {
             if result? {
                 return Ok(());
@@ -253,4 +276,47 @@ async fn main() -> Result<(), Error> {
         tokio::select! {_=tokio::time::sleep(Duration::from_secs(10))=>{},_=tokio::signal::ctrl_c()=>break}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_merge_patch_clears_unknown_members_without_losing_other_status() {
+        let mut status = flame_api::FlameWorkerStatus {
+            config_hash: "retained".into(),
+            ..Default::default()
+        };
+        let absent = status_merge_patch(&status);
+        assert!(absent["status"].get("capacity").unwrap().is_null());
+        assert_eq!(absent["status"]["configHash"], "retained");
+        status.capacity = Some(flame_api::NodeCapacity {
+            cpu: Some(8),
+            gpu: Some(0),
+            memory: None,
+        });
+        assert_eq!(
+            status_merge_patch(&status)["status"]["capacity"],
+            json!({"cpu":8,"gpu":0,"memory":null})
+        );
+    }
+
+    #[test]
+    fn usage_merge_patch_replaces_missing_measurements_and_preserves_zero() {
+        let mut status = flame_api::FlameWorkerStatus::default();
+        assert!(status_merge_patch(&status)["status"]["usage"].is_null());
+        status.usage = Some(flame_api::NodeUsage {
+            cpu_percent: Some(0.0),
+            memory: None,
+            gpu_devices: Some(vec![flame_api::GpuUsage {
+                pci_address: "0000:01:00.0".into(),
+                utilization_percent: 0,
+            }]),
+        });
+        assert_eq!(
+            status_merge_patch(&status)["status"]["usage"],
+            json!({"cpuPercent":0.0,"memory":null,"gpuDevices":[{"pciAddress":"0000:01:00.0","utilizationPercent":0}]})
+        );
+    }
 }

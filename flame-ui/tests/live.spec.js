@@ -88,15 +88,17 @@ test.describe('live Flame deployment', () => {
 
   test('root console shows the registered application, real worker, and executor', async ({ page }) => {
     const catalog = page.waitForResponse(response => new URL(response.url()).pathname === '/api/connections');
-    const applications = page.waitForResponse(response => getResource(response, 'applications'));
+    const initialNodes = page.waitForResponse(response => getResource(response, 'nodes'));
     await page.goto('/');
     const configured = await (await catalog).json();
     expect(configured.items.length, 'at least one Flame is configured').toBeGreaterThan(0);
     const selector = page.getByRole('combobox', {name:'Cluster', exact:true});
     await expect(selector.locator('option')).toHaveText(configured.items.map(connection => connection.namespace || connection.displayName || connection.id));
     await expect(selector).toHaveValue(configured.items[0].id);
-    expect((await applications).ok()).toBe(true);
-    await expect(page).toHaveURL(/\/#\/applications$/);
+    expect((await initialNodes).ok()).toBe(true);
+    await expect(page).toHaveURL(/\/#\/dashboard$/);
+    await expect(page.getByRole('heading', {name:'Dashboard', exact:true, level:1})).toBeVisible();
+    await navigate(page, 'applications');
     const applicationRow = page.locator('#content tbody tr').filter({ has: page.getByRole('button', { name: new RegExp(`^${application.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`) }) });
     await expect(applicationRow).toBeVisible();
     await expect(applicationRow.locator('.badge')).toHaveText('Enabled');

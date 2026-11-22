@@ -126,6 +126,8 @@ impl Host for LocalHost {
     fn command(&mut self, program: &Path, args: &[String]) -> Result<CommandOutput> {
         let timeout = if program == Path::new("systemctl") {
             Duration::from_secs(75)
+        } else if program == Path::new("/usr/bin/nvidia-smi") {
+            Duration::from_secs(3)
         } else {
             Duration::from_secs(15)
         };

@@ -84,8 +84,11 @@ private keys. Restrict UI/API access to trusted administrators.
 Open `http://<kubeconfig-server-ip>/`. Setup derives the UI external IP and host
 allowlist directly from kubeconfig, without a UI-address flag or port-forward.
 The selector shows namespaces only and opens the first configured Flame by
-default; it has no All clusters option or aggregate page. Navigation is Nodes →
-Executors → Applications → Sessions → Settings, with Compact density throughout.
+default; it has no All clusters option or cross-cluster summary. `/` opens that
+cluster's Dashboard with node readiness and reported capacity totals. A separate
+section shows current cluster CPU, memory, and GPU usage. Navigation is
+Dashboard → Nodes → Executors → Applications → Sessions → Settings, with Compact
+density throughout.
 
 The generated `flame.yaml` client credential lasts one year, with renewal 30 days
 before expiry. Exported copies need a separate refresh. Node join tokens keep

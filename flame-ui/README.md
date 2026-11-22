@@ -1,19 +1,39 @@
 # Flame UI
 
-The root URL `/` opens the first configured Flame's Applications view
-(`#/applications`). The selector lists configured clusters only, such as
-`flame-1` and `flame-2`; there is no All clusters option or aggregate page.
+The root URL `/` opens the first configured Flame's Dashboard
+(`#/dashboard`). The selector lists configured clusters only, such as
+`flame-1` and `flame-2`; there is no All clusters option or cross-cluster summary.
 Switching clusters preserves the resource view while clearing pages, filters,
 drawers, pending requests, and credentials from the previous Flame.
 
-Navigation is Nodes, Executors, Applications, Sessions, Settings. Nodes lists
-enrolled nodes in the selected cluster, including Pending workers that
-have not registered with FLM yet. It shows worker readiness, address, reported
-FEM/cache service states, runtimes, executor limit, and heartbeat. Unreported
-values remain unavailable; no hardware capacity is inferred.
+Navigation is Dashboard, Nodes, Executors, Applications, Sessions, Settings.
+Dashboard reads the complete selected cluster node inventory in bounded pages.
+Overview shows a circular Ready/not-ready node chart alongside the reported GPU,
+CPU, and memory capacity totals. The Current usage section below it summarizes
+the latest reports for the cluster. Use a monitoring system such as Prometheus
+for historical views and averages over time. The Nodes table shows capacity per
+worker. Incomplete inventories cannot replace the last complete dashboard data.
 
-Settings shows the selected connection, a Download flame.yaml button when a
-client bundle is configured, and the current join command/expiration. Downloads
+Current usage comes only from `FlameWorker.status.usage` with a heartbeat aged
+0–120 seconds, including reports from nodes that are not Ready. CPU averages the
+latest samples across reporting workers. Memory shows combined used / total bytes. GPU averages reported device utilization
+across reporting GPUs. Coverage counts identify partial results. Missing or
+stale readings display `-`, and genuine zero readings stay zero.
+
+Nodes lists
+enrolled nodes in the selected cluster, including Pending workers that
+have not registered with FLM yet. The table shows overall readiness, a dedicated Capacity column, address,
+runtimes, executor limit, and heartbeat. FEM and cache service states are
+available in node details as Executor manager and Object cache. Node details
+also show total GPU, CPU, and memory capacity separately from current usage,
+and list PCI devices detected by flmlet. Unreported values display `-`.
+
+Settings separates full session-manager configuration, the client download,
+and node enrollment into three cards. The configuration card displays
+`flame-cluster.yaml` as pretty-printed JSON when connection configuration or a
+per-cluster runtime review snapshot is available; it reports unavailability
+instead of fabricating configuration from connection metadata. The other cards
+provide Download flame.yaml and the current join command/expiration. Downloads
 contain the selected cluster's client configuration and are never rendered in
 the page. The copyable join command downloads the hosted installer, so the worker
 does not need a local setup.sh. Join tokens are loaded only in Settings and are

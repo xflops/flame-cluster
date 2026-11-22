@@ -1,6 +1,7 @@
 //! Host runtime installation and reconciliation with explicitly scoped worker credentials.
 use flame_api::{
-    Condition, FlameCluster, FlameWorker, FlameWorkerStatus, HostServiceStatus, validation,
+    Condition, FlameCluster, FlameWorker, FlameWorkerStatus, HostServiceStatus, NodeCapacity,
+    validation,
 };
 use kube::ResourceExt;
 use rustls_pki_types::{CertificateDer, pem::PemObject};
@@ -13,6 +14,8 @@ use std::{
 };
 
 pub mod host;
+mod pci;
+pub mod usage;
 
 pub const FEM: &str = "flame-executor-manager.service";
 pub const FOC: &str = "flame-object-cache.service";
@@ -446,13 +449,13 @@ fn version_matches(selected: &str, installed: Option<&str>) -> bool {
                 == selected.strip_prefix('v').unwrap_or(selected)
         })
 }
-fn node_registered(data: &Value, hostname: &str) -> bool {
+fn registered_node<'a>(data: &'a Value, hostname: &str) -> Option<&'a Value> {
     let rows = data
         .get("items")
         .and_then(Value::as_array)
         .or_else(|| data.as_array());
-    rows.is_some_and(|rows| {
-        rows.iter().any(|node| {
+    rows.and_then(|rows| {
+        rows.iter().find(|node| {
             let name = node
                 .get("hostname")
                 .or_else(|| node.pointer("/spec/hostname"))
@@ -470,7 +473,29 @@ fn node_registered(data: &Value, hostname: &str) -> bool {
         })
     })
 }
-fn registration(host: &mut impl Host, settings: &Settings, hostname: &str) -> Result<bool> {
+fn node_capacity(node: &Value) -> Option<NodeCapacity> {
+    // Native flmctl inventory reports hardware fields directly on each node.
+    // Keep nested capacity wrappers compatible without overriding native values.
+    let nested = node
+        .get("capacity")
+        .or_else(|| node.pointer("/status/capacity"));
+    let measurement = |field| {
+        node.get(field)
+            .or_else(|| nested.and_then(|capacity| capacity.get(field)))
+            .and_then(Value::as_u64)
+    };
+    let result = NodeCapacity {
+        cpu: measurement("cpu"),
+        gpu: measurement("gpu"),
+        memory: measurement("memory"),
+    };
+    (result.cpu.is_some() || result.gpu.is_some() || result.memory.is_some()).then_some(result)
+}
+fn registration(
+    host: &mut impl Host,
+    settings: &Settings,
+    hostname: &str,
+) -> Result<(bool, Option<NodeCapacity>)> {
     let config = settings.conf("flmlet-client.yaml");
     let config = config
         .to_str()
@@ -487,11 +512,11 @@ fn registration(host: &mut impl Host, settings: &Settings, hostname: &str) -> Re
             ],
         )?;
         if !result.success {
-            return Ok(false);
+            return Ok((false, None));
         }
         let data: Value = serde_json::from_str(&result.stdout)?;
-        if node_registered(&data, hostname) {
-            return Ok(true);
+        if let Some(node) = registered_node(&data, hostname) {
+            return Ok((true, node_capacity(node)));
         }
         let rows = data
             .get("items")
@@ -501,10 +526,10 @@ fn registration(host: &mut impl Host, settings: &Settings, hostname: &str) -> Re
                 Error::Invalid("flmctl node listing must contain an inventory array".into())
             })?;
         if rows.len() < 100 {
-            return Ok(false);
+            return Ok((false, None));
         }
     }
-    Ok(false)
+    Ok((false, None))
 }
 
 #[derive(Debug)]
@@ -529,6 +554,9 @@ pub fn failed_status(worker: &FlameWorker, error: &str) -> FlameWorkerStatus {
     status.observed_generation = worker.metadata.generation.unwrap_or(0);
     status.last_heartbeat_time = chrono::Utc::now().to_rfc3339();
     status.conditions = conditions(worker, false, false, "ReconcileFailed", error);
+    status.capacity = None;
+    status.usage = None;
+    status.pci_devices = None;
     status
 }
 fn conditions(
@@ -995,6 +1023,7 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
                 "Worker is disabled or deleting; owned services are stopped",
             ),
             fem: service(host, FEM),
+            pci_devices: pci::inventory(host),
             object_cache: worker.spec.manage_object_cache.then(|| service(host, FOC)),
             ..Default::default()
         };
@@ -1030,7 +1059,8 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
     };
     let fem = ensure_active(host, FEM)?;
     let hostname = host.hostname()?;
-    let registered = registration(host, settings, &hostname)?;
+    let (registered, capacity) = registration(host, settings, &hostname)?;
+    let pci_devices = pci::inventory(host);
     let address = std::net::SocketAddrV4::new(
         validation::lan_ipv4(&worker.spec.address)?,
         worker.spec.cache_port,
@@ -1067,6 +1097,9 @@ pub fn reconcile(host: &mut impl Host, settings: &Settings, input: Input<'_>) ->
         installed_version: version,
         hostname: Some(hostname),
         registered,
+        capacity,
+        usage: None,
+        pci_devices,
         cache_ready,
         fem,
         object_cache,

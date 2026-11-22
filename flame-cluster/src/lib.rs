@@ -1,5 +1,6 @@
 mod actions;
 mod client_config;
+mod configuration;
 pub mod connection;
 mod join;
 mod listing;
@@ -134,6 +135,7 @@ async fn trusted_host(State(state): State<AppState>, request: Request, next: Nex
 
 async fn connection(State(state): State<AppState>) -> Json<Value> {
     let mut metadata = json!({"endpoint":state.endpoint,"displayName":state.display_name,"clientConfigAvailable":state.client_config_secret.is_some()});
+    configuration::append(&state, &mut metadata).await;
     if let Some(namespace) = state.namespace {
         metadata["namespace"] = json!(namespace);
     }

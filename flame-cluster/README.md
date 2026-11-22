@@ -46,6 +46,17 @@ listing or writes are granted. Client downloads return only the client Secret's
 from the management namespace. The matching public trust is also
 provided in each Flame namespace for its operator-managed gateway.
 
+The selected `/connection` response also includes `configuration`: the actual
+session-manager `flame-cluster.yaml` from that Flame's `<name>-config` ConfigMap,
+parsed as a complete JSON object for Settings. The namespace Role grants only
+`get` on that exact ConfigMap; no ConfigMap listing or writes are granted. This
+generated configuration contains TLS file paths, not Secret contents. Reads
+time out after twelve seconds and reject configurations larger than 1 MiB or
+non-object YAML. Missing, denied, or invalid configuration returns a generic
+`configurationError` while preserving HTTP 200 connection metadata. Standalone
+connections without managed namespace/name settings omit both fields and make
+no Kubernetes configuration request.
+
 For a standalone process, the existing single-endpoint environment mode remains:
 
 ```sh
@@ -71,7 +82,7 @@ or client-config Secrets require the corresponding scoped Kubernetes identity.
 ## API
 
 - `GET /api/connections`: ordered public connection metadata, including namespace.
-- `GET /api/connections/{id}/connection`: selected endpoint/display metadata.
+- `GET /api/connections/{id}/connection`: selected endpoint/display metadata and managed session-manager configuration as JSON.
 - `GET /api/connections/{id}/join`: selected join command and expiration.
 - `GET /api/connections/{id}/flame.yaml`: selected client YAML as a `flame.yaml` attachment.
 - `GET /api/connections/{id}/nodes`: namespace-scoped FlameWorkers filtered by the selected Flame, with raw resource fields plus `readiness` (Pending, Ready, Not ready, Disabled, or Deleting).

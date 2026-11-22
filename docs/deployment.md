@@ -140,12 +140,18 @@ address, and reported status even before FLM registration. Readiness is Pending,
 Ready, Not ready, Disabled, or Deleting; no FLM node fallback or invented machine
 capacity is used. Applications, sessions, executors, and tasks still read the
 selected FLM. Worker-list failures are reported as errors, not healthy empty
-inventories. There is no aggregate page or All clusters option.
+inventories. There is no cross-cluster summary or All clusters option. `/` opens
+the selected cluster's Dashboard. Overview shows node readiness and total
+reported GPU, CPU, and memory capacity. Current usage below it summarizes the
+latest CPU, memory, and GPU utilization across the selected cluster. Both sections
+use FlameWorker status and show how many workers report each measurement.
+Unavailable values display `-`. The Nodes page shows capacity per worker.
 
-Compact density is the default. Navigation is Nodes → Executors → Applications
-→ Sessions → Settings. Settings shows the selected connection and its current
-join command and expiration, plus **Download flame.yaml** for the selected
-namespace. The join command fetches the hosted installer and runs it directly:
+Compact density is the default. Navigation is Dashboard → Nodes → Executors →
+Applications → Sessions → Settings. Settings provides dedicated blocks for the
+full session-manager configuration as pretty JSON, **Download flame.yaml**, and
+the node join command with its expiration. The join command fetches the hosted
+installer and runs it directly:
 
 ```sh
 curl -fsSL https://xflops.io/cluster/setup.sh | sudo sh -s -- --join '<token>'

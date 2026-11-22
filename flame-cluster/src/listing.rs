@@ -34,6 +34,12 @@ impl Default for PageQuery {
 fn bad(message: &str) -> ApiError {
     (StatusCode::BAD_REQUEST, Json(json!({"error":message})))
 }
+pub(crate) fn validate_session_id(id: &str) -> Result<(), ApiError> {
+    if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
+        return Err(bad("Invalid session ID"));
+    }
+    Ok(())
+}
 impl PageQuery {
     pub fn offset(&self) -> Result<usize, ApiError> {
         if !self.search.is_empty() {
@@ -182,9 +188,7 @@ pub(crate) async fn tasks(
     Path(id): Path<String>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
-        return Err(bad("Invalid session ID"));
-    }
+    validate_session_id(&id)?;
     query.offset()?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),

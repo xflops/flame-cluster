@@ -88,6 +88,7 @@ or client-config Secrets require the corresponding scoped Kubernetes identity.
 - `GET /api/connections/{id}/nodes`: namespace-scoped FlameWorkers filtered by the selected Flame, with raw resource fields plus `readiness` (Pending, Ready, Not ready, Disabled, or Deleting).
 - `GET /api/connections/{id}/{applications|sessions|executors}`: selected FLM resources.
 - `GET /api/connections/{id}/sessions/{session}/tasks`.
+- `GET /api/connections/{id}/sessions/{session}/events`: lifecycle events from native `GetSession`, returned as `{items: [...]}` with only `code`, `message`, and `creation_time`. Session specs and payloads are excluded; missing sessions return 404 and upstream errors stay generic.
 - `POST /api/connections/{id}/sessions/{session}/actions/{suspend|resume|close|delete}` with JSON `{}`.
 - `GET /healthz`: process health, independent of FLM availability.
 

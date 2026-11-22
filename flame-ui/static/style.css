@@ -1048,8 +1048,6 @@ dialog::backdrop {
 .ready-circle.good { background:#16a34a }
 .ready-circle.bad { background:#dc2626 }
 
-.metrics.overview-summary { grid-template-columns:repeat(2,minmax(0,1fr)) minmax(0,1.15fr) }
-.overview-summary h2 { margin:0 0 16px; color:#374151; font-size:13px; font-weight:600 }
 .readiness-body { display:flex; align-items:center; gap:20px; flex-wrap:wrap }
 .readiness-chart { display:block; width:112px; height:112px; flex-shrink:0; overflow:visible; stroke:none; stroke-linecap:butt }
 .donut-track,.donut-ready { fill:none; stroke-width:10 }
@@ -1061,28 +1059,11 @@ dialog::backdrop {
 .readiness-legend { display:grid; gap:13px; flex:1; min-width:98px; font-size:11px; color:#4b5563 }
 .readiness-legend>div { display:flex; align-items:center; gap:7px }
 .readiness-legend strong { margin-left:auto; color:#374151; font-size:14px; font-variant-numeric:tabular-nums }
-.resource-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; min-width:0 }
-.resource-grid .resource-tile { padding:13px 17px; min-width:0 }
-.resource-tile .metric-value { font-size:24px; margin-top:5px; gap:8px; letter-spacing:-.5px; flex-wrap:wrap }
-.resource-tile .metric-value small { font-size:10px; color:#6b7280; letter-spacing:0 }
-@media(max-width:1100px) {
- .metrics.overview-summary { grid-template-columns:repeat(2,minmax(0,1fr)) }
- .overview-capacity { grid-column:1/-1 }
-}
 @media(max-width:760px) {
- .metrics.overview-summary { grid-template-columns:1fr }
  .readiness-body { justify-content:center }
  .readiness-legend { flex:0 1 150px }
 }
-
-.metrics.node-summary { grid-template-columns:minmax(280px,1fr) minmax(0,1.15fr) }
-.node-summary .overview-capacity { grid-column:auto }
-@media(max-width:1100px) {
- .metrics.node-summary { grid-template-columns:repeat(2,minmax(0,1fr)) }
-}
-@media(max-width:760px) {
- .metrics.node-summary { grid-template-columns:1fr }
-}
+#events td:last-child { white-space:pre-wrap; overflow-wrap:anywhere }
 
 .session-progress { min-width:190px; max-width:260px; width:100% }
 .session-progress-track { display:flex; height:9px; overflow:hidden; border-radius:5px; background:#edf1f7 }

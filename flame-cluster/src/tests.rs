@@ -21,6 +21,37 @@ impl frontend_server::Frontend for Flame {
         request: GrpcRequest<GetSessionRequest>,
     ) -> Result<GrpcResponse<Session>, Status> {
         let id = request.into_inner().session_id;
+        if id.starts_with("event-") {
+            self.calls.lock().unwrap().push(format!("get:{id}"));
+            if id == "event-missing" {
+                return Err(Status::not_found("PRIVATE_SESSION_MISSING"));
+            }
+            if id == "event-failed" {
+                return Err(Status::internal("PRIVATE_SESSION_FAILURE"));
+            }
+            return Ok(GrpcResponse::new(Session {
+                metadata: Some(Metadata {
+                    id: id.clone(),
+                    name: "PRIVATE_SESSION_METADATA".into(),
+                }),
+                spec: Some(SessionSpec {
+                    application: "PRIVATE_SPEC_APPLICATION".into(),
+                    ..Default::default()
+                }),
+                status: Some(SessionStatus {
+                    events: if id == "event-empty" {
+                        vec![]
+                    } else {
+                        vec![Event {
+                            code: 42,
+                            message: Some(format!("{}:{id}", self.name_prefix)),
+                            creation_time: 1795000000000,
+                        }]
+                    },
+                    ..Default::default()
+                }),
+            }));
+        }
         let state = if id.contains("closed") {
             1
         } else if id.contains("suspended") {
@@ -1738,4 +1769,76 @@ async fn unavailable_or_invalid_configuration_preserves_healthy_connection_metad
         );
         assert!(!metadata.to_string().contains("PRIVATE"));
     }
+}
+
+#[tokio::test]
+async fn session_events_use_selected_frontend_and_session_without_exposing_session_fields() {
+    use std::sync::{Arc, Mutex};
+    let first_calls = Arc::new(Mutex::new(Vec::new()));
+    let second_calls = Arc::new(Mutex::new(Vec::new()));
+    let (first, stop_first) = frontend(Flame {
+        name_prefix: "first".into(),
+        calls: first_calls.clone(),
+    })
+    .await;
+    let (second, stop_second) = frontend(Flame {
+        name_prefix: "second".into(),
+        calls: second_calls.clone(),
+    })
+    .await;
+    let app = fleet_router(vec![("first".into(), first), ("second".into(), second)]).unwrap();
+    for (uri, message) in [
+        ("/api/sessions/event-one/events", "first:event-one"),
+        (
+            "/api/connections/second/sessions/event-two/events?connection=first&session=event-one",
+            "second:event-two",
+        ),
+    ] {
+        let (status, data) = get(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            data,
+            json!({"items":[{"code":42,"message":message,"creation_time":1795000000000_i64}]})
+        );
+        assert!(!data.to_string().contains("PRIVATE"));
+    }
+    assert_eq!(first_calls.lock().unwrap().as_slice(), ["get:event-one"]);
+    assert_eq!(second_calls.lock().unwrap().as_slice(), ["get:event-two"]);
+    let (status, empty) = get(app, "/api/connections/second/sessions/event-empty/events").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty, json!({"items":[]}));
+    let _ = stop_first.send(());
+    let _ = stop_second.send(());
+}
+
+#[tokio::test]
+async fn session_event_failures_are_generic_and_invalid_ids_never_reach_frontend() {
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (state, stop) = frontend(Flame {
+        name_prefix: String::new(),
+        calls: calls.clone(),
+    })
+    .await;
+    let app = router(state);
+    for (id, expected) in [
+        ("event-missing", StatusCode::NOT_FOUND),
+        ("event-failed", StatusCode::BAD_GATEWAY),
+    ] {
+        let (status, error) = get(app.clone(), &format!("/api/sessions/{id}/events")).await;
+        assert_eq!(status, expected);
+        assert_eq!(
+            error,
+            json!({"error":"Session events are unavailable. Refresh and retry."})
+        );
+    }
+    for id in ["event-%0Ainvalid".to_owned(), "x".repeat(257)] {
+        let (status, error) = get(app.clone(), &format!("/api/sessions/{id}/events")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error, json!({"error":"Invalid session ID"}));
+    }
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        ["get:event-missing", "get:event-failed"]
+    );
+    let _ = stop.send(());
 }

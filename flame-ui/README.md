@@ -28,6 +28,9 @@ available in node details as Executor manager and Object cache. Node details
 also show total GPU, CPU, and memory capacity separately from current usage,
 and list PCI devices detected by flmlet. Unreported values display `-`.
 
+Session details show events from the selected Flame, newest first, with time,
+code, and message. Use **Refresh events** to reload them independently of tasks.
+
 Settings separates full session-manager configuration, the client download,
 and node enrollment into three cards. The configuration card displays
 `flame-cluster.yaml` as pretty-printed JSON when connection configuration or a

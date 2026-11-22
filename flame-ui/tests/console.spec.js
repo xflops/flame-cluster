@@ -42,6 +42,7 @@ async function fixture(page, options={}) {
       return route.fulfill({json:{session:data.sessions[0]||null}});
     }
     const currentPage=Number(url.searchParams.get('page')||1),pageSize=Number(url.searchParams.get('pageSize')||12);
+    if(resource==='events') return route.fulfill({json:{items:options.events?.[selected.id] || []}});
     if(resource==='tasks') {
       const id = options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`;
       const created = 1794614400000;
@@ -237,6 +238,25 @@ test('session task drawer retains task paging and progress',async({page})=>{
   await expect(tasks).toContainText('task-2');
   await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('-');
   await expect(page.getByRole('button',{name:'Next tasks →'})).toBeDisabled();
+});
+test('session drawer loads scoped events newest first and refreshes them independently',async({page})=>{
+  const path=scoped('sessions/session-42/events');
+  const requested=page.waitForRequest(r=>new URL(r.url()).pathname===path);
+  await fixture(page,{events:{training:[
+    {creation_time:1794614400000,code:101,message:'Session queued'},
+    {creation_time:1794614401000,code:203,message:'Worker allocated <worker>'},
+  ]}});
+  await page.goto('/#/sessions');
+  await page.getByRole('button',{name:'session-42',exact:true}).click();
+  expect((await requested).method()).toBe('GET');
+  const events=page.getByRole('region',{name:'Session events',exact:true});
+  await expect(events.getByRole('columnheader')).toHaveText(['Time','Code','Message']);
+  await expect(events.locator('tbody tr td:last-child')).toHaveText(['Worker allocated <worker>','Session queued']);
+  await expect(events.locator('tbody tr td:nth-child(2)')).toHaveText(['203','101']);
+  await page.route('**'+path, route=>route.fulfill({json:{items:[]}}));
+  await events.getByRole('button',{name:'Refresh events'}).click();
+  await expect(events).toContainText('No events yet.');
+  await expect(page.locator('#tasks')).toContainText('task-1');
 });
 test('session commands use direct FLM actions and update available commands',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');page.on('dialog',dialog=>dialog.accept());

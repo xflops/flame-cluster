@@ -10,7 +10,7 @@ const paths = {
 };
 const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
 const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
-let catalogController, pollController, taskController, actionController, downloadController, revision = 0;
+let catalogController, pollController, taskController, eventsController, actionController, downloadController, revision = 0;
 const pageSize = 12;
 const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
@@ -66,7 +66,7 @@ async function loadConnections() {
 }
 function selectConnection(id) {
   if (id === state.connectionId || !state.connections?.some(connection => connection.id === id)) return;
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
+  revision++; pollController?.abort(); taskController?.abort(); eventsController?.abort(); actionController?.abort(); downloadController?.abort();
   pageCache.clear();
   Object.assign(state, {connectionId: id, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
   $('#details').close(); $('#detail-content').replaceChildren();
@@ -83,10 +83,10 @@ const badge = label => {
   return `<span class="badge ${tone}">${e(label)}</span>`;
 };
 const readiness = label => `<span class="readiness" title="${e(label)}" role="img" aria-label="${e(label)}"><span class="ready-circle ${label === 'Ready' ? 'good' : 'bad'}" aria-hidden="true"></span><span>${e(label)}</span></span>`;
-const date = value => {
+const date = (value, seconds = false) => {
   if (!value) return '—';
   const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', ...(seconds ? {second: '2-digit'} : {}) });
 };
 function taskDuration(status) {
   const created = Number(status?.creation_time);
@@ -405,6 +405,7 @@ function queryChanged() {
 const properties = rows => `<dl class="properties">${rows.map(([label, value]) => `<dt>${e(label)}</dt><dd>${e(value)}</dd>`).join('')}</dl>`;
 function openDetails(row) {
   taskController?.abort();
+  eventsController?.abort();
   state.drawer = row;
   $('#detail-title').textContent = nameOf(row);
   $('#detail-kind').textContent = state.view.slice(0, -1).toUpperCase();
@@ -449,13 +450,34 @@ function openDetails(row) {
   } else {
     detail += properties([['Application', row.spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)], ['Priority', n(row.spec?.priority)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)]]);
     detail += `${sessionProgress(row.status, true)}<div class="drawer-section"><h3>Tasks</h3><button class="button small" id="refresh-tasks">Refresh tasks</button></div><div id="tasks"></div>`;
-    if (row.status?.events?.length) detail += '<div class="drawer-section"><h3>Session events</h3></div><pre>' + e(row.status.events.map(event => `${date(event.creation_time)}  ${event.message || event.code}`).join('\n')) + '</pre>';
+    detail += '<section aria-label="Session events"><div class="drawer-section"><h3>Events</h3><button class="button small" id="refresh-events">Refresh events</button></div><div id="events" aria-live="polite"></div></section>';
   }
   $('#detail-content').innerHTML = detail;
   if (!$('#details').open) $('#details').showModal();
   if (state.view === 'sessions') {
     $('#refresh-tasks').addEventListener('click', () => loadTasks(row));
+    $('#refresh-events').addEventListener('click', () => loadSessionEvents(row));
     loadTasks(row);
+    loadSessionEvents(row);
+  }
+}
+async function loadSessionEvents(row) {
+  eventsController?.abort();
+  const controller = new AbortController();
+  eventsController = controller;
+  const target = $('#events');
+  const current = () => !controller.signal.aborted && state.drawer === row;
+  target.textContent = 'Loading…';
+  try {
+    const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}/events`,
+      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]));
+    if (!current()) return;
+    const events = data.items.sort((a, b) => n(b.creation_time) - n(a.creation_time));
+    target.innerHTML = events.length ? table(['Time', 'Code', 'Message'], events.map(event =>
+      `<tr><td>${date(event.creation_time, true)}</td><td>${e(event.code ?? '-')}</td><td>${e(event.message || '-')}</td></tr>`
+    )) : '<p class="detail-note">No events yet.</p>';
+  } catch {
+    if (current()) target.innerHTML = '<p class="notice">Unable to load events.</p>';
   }
 }
 async function loadTasks(row, page = 1) {
@@ -486,7 +508,7 @@ async function loadTasks(row, page = 1) {
   } finally { clearTimeout(timer); }
 }
 function route() {
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
+  revision++; pollController?.abort(); taskController?.abort(); eventsController?.abort(); actionController?.abort(); downloadController?.abort();
   state.view = parseRoute(location.hash);
   if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
   Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null, downloading: false, downloadStatus: ''});
@@ -501,7 +523,7 @@ $('#auto-refresh').addEventListener('click', () => { state.auto = !state.auto; r
 $('#previous').addEventListener('click', () => { state.page--; queryChanged(); });
 $('#next').addEventListener('click', () => { state.page++; queryChanged(); });
 $('#close-details').addEventListener('click', () => $('#details').close());
-$('#details').addEventListener('close', () => { state.drawer = null; taskController?.abort(); });
+$('#details').addEventListener('close', () => { state.drawer = null; taskController?.abort(); eventsController?.abort(); });
 $('#details').addEventListener('click', event => { if (event.target === $('#details') && event.clientX < $('#details').getBoundingClientRect().left) $('#details').close(); });
 window.addEventListener('hashchange', route);
 window.addEventListener('resize', renderNavigation);

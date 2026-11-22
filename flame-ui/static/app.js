@@ -130,10 +130,19 @@ function resourceUsageTable(nodes) {
   });
   return `<section class="metric current-usage" aria-label="Current usage"><h2>Current usage</h2><p>Reporting: CPU ${cpuCount}/${total} nodes · Memory ${memoryCount}/${total} nodes · GPU ${gpuCount}/${total} nodes (${devices} ${devices === 1 ? 'GPU' : 'GPUs'})</p>${table(['Node','CPU usage','Memory usage','GPU usage'], rows)}${total ? '' : '<p>No nodes enrolled.</p>'}</section>`;
 }
+function capacityTotals(nodes) {
+  const resources = [['gpu', 'Total GPU'], ['cpu', 'Total CPU'], ['memory', 'Total memory']];
+  return resources.map(([key, label]) => {
+    const readings = nodes.map(node => node.status?.capacity?.[key]).filter(knownCapacity);
+    const sum = readings.reduce((total, value) => total + Number(value), 0);
+    const value = readings.length ? (key === 'memory' ? bytes(sum) : f(sum)) : '-';
+    return `<section class="metric dashboard-capacity" aria-label="${label}"><h2>${label}</h2><div class="metric-value">${e(value)}</div><p>Reporting ${readings.length}/${nodes.length} nodes</p></section>`;
+  }).join('');
+}
 function dashboardContent(nodes) {
   const total = nodes.length, ready = nodes.filter(node => stateOf(node, 'nodes') === 'Ready').length;
   const other = total - ready, percentage = total ? ready * 100 / total : 0;
-  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${resourceUsageTable(nodes)}</div>`;
+  return `<div class="dashboard-summary"><section class="metric" aria-label="Node"><h2>Node</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacityTotals(nodes)}</div><div class="dashboard-usage">${resourceUsageTable(nodes)}</div>`;
 }
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
 const serviceState = value => typeof value === 'string' && value ? value[0].toUpperCase() + value.slice(1) : value;

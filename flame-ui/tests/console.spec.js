@@ -76,17 +76,18 @@ test('root is the console and reads only its active Flame resource',async({page}
   await expect(page.getByRole('heading',{name:'Dashboard',exact:true,level:1})).toBeVisible();
 });
 const usageRow=(page,name)=>page.getByRole('region',{name:'Current usage',exact:true}).getByRole('row').filter({has:page.getByRole('cell',{name,exact:true})});
-test('dashboard reads all node pages and shows individual fresh usage without capacity totals or averages',async({page})=>{
+test('dashboard sums reported capacity across pages and keeps per-worker usage separate',async({page})=>{
   const now=Date.parse('2030-01-01T00:00:00Z'),gib=1024**3;await page.clock.install({time:new Date(now)});
-  const nodes=Array.from({length:101},(_,index)=>({metadata:{name:`worker-${index}`},readiness:index===100?'Pending':'Ready',status:{lastHeartbeatTime:new Date(now).toISOString(),capacity:{gpu:99,cpu:999,memory:gib},usage:index===0?{cpuPercent:0,memory:{usedBytes:gib,totalBytes:8*gib}}:index===100?{cpuPercent:50,memory:{usedBytes:3*gib,totalBytes:8*gib},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]}:null}}));
+  const nodes=Array.from({length:101},(_,index)=>({metadata:{name:`worker-${index}`},readiness:index===100?'Pending':'Ready',status:{lastHeartbeatTime:new Date(now).toISOString(),capacity:index===0?{gpu:0,cpu:8,memory:gib}:index===100?{cpu:16,memory:3*gib}:undefined,usage:index===0?{cpuPercent:0,memory:{usedBytes:gib,totalBytes:8*gib}}:index===100?{cpuPercent:50,memory:{usedBytes:3*gib,totalBytes:8*gib},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]}:null}}));
   const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===scoped('nodes'))reads.push(url.searchParams.get('page'))});
   await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
   await expect(page.getByRole('img',{name:'Nodes: 100 ready, 1 not ready, 101 total'})).toBeVisible();expect(reads).toEqual(['1','2']);
   await expect(usageRow(page,'worker-0').getByRole('cell')).toHaveText(['worker-0','0%','1 GiB / 8 GiB','-']);
   await expect(usageRow(page,'worker-100').getByRole('cell')).toHaveText(['worker-100','50%','3 GiB / 8 GiB','0000:01:00.0 0%']);
   await expect(page.getByRole('region',{name:'Current usage'})).toContainText('Reporting: CPU 2/101 nodes · Memory 2/101 nodes · GPU 1/101 nodes (1 GPU)');
-  await expect(page.locator('.dashboard-summary>.metric')).toHaveCount(2);
-  await expect(page.locator('.dashboard-summary')).not.toContainText(/average|Total GPU|Total CPU|Total memory|Resource usage/);
+  await expect(page.locator('.dashboard-summary .dashboard-capacity .metric-value')).toHaveText(['0','24','4 GiB']);
+  await expect(page.locator('.dashboard-summary .dashboard-capacity p')).toHaveText(['Reporting 1/101 nodes','Reporting 2/101 nodes','Reporting 2/101 nodes']);
+  await expect(page.locator('.dashboard-summary').getByRole('region',{name:'Current usage'})).toHaveCount(0);
   await expect(page.getByLabel('Filter by status')).toBeHidden();await expect(page.locator('.table-footer')).toBeHidden();
 });
 test('dashboard isolates each selected cluster and shows unknown readings as hyphens',async({page})=>{
@@ -98,6 +99,7 @@ test('dashboard isolates each selected cluster and shows unknown readings as hyp
   await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
   await expect(page.getByRole('img',{name:'Nodes: 0 ready, 1 not ready, 1 total'})).toBeVisible();
   await expect(usageRow(page,'unreported').getByRole('cell')).toHaveText(['unreported','-','-','-']);
+  await expect(page.locator('.dashboard-capacity .metric-value')).toHaveText(['-','-','-']);
   await expect(page.getByRole('region',{name:'Current usage'})).toContainText('CPU 0/1 nodes · Memory 0/1 nodes · GPU 0/1 nodes (0 GPUs)');
   await expect(usageRow(page,'flm-worker-01')).toHaveCount(0);
   await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('training');

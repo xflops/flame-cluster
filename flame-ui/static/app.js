@@ -131,10 +131,10 @@ function resourceUsageSummary(nodes) {
   const gpu = readings.flatMap(usage => usage.gpuDevices || []);
   const gpuNodes = readings.filter(usage => usage.gpuDevices?.length).length;
   const metrics = [
-    ['CPU usage', usagePercent(average(cpu)), 'Average across reporting nodes', cpu.length],
-    ['Memory usage', usageBytes(memory.length ? memoryTotals : undefined), 'Used / total', memory.length],
     ['GPU usage', usagePercent(average(gpu.map(device => device.utilizationPercent))),
       `${gpu.length} reporting ${gpu.length === 1 ? 'GPU' : 'GPUs'}`, gpuNodes],
+    ['CPU usage', usagePercent(average(cpu)), 'Average across reporting nodes', cpu.length],
+    ['Memory usage', usageBytes(memory.length ? memoryTotals : undefined), 'Used / total', memory.length],
   ];
   const cards = metrics.map(([label, value, description, count]) => `
     <section class="metric usage-metric" aria-label="${label}">
@@ -408,7 +408,11 @@ function openDetails(row) {
       ['Total memory', formatCapacity('memory', capacity?.memory)],
     ]) + '</section>';
     const usage = reportedUsage(row);
-    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([['CPU usage', usagePercent(usage.cpuPercent)], ['Memory usage', usageBytes(usage.memory)], ['GPU usage', gpuUsageText(usage.gpuDevices)]]) + '</section>';
+    detail += '<section aria-label="Node resource usage"><h3>Resource usage</h3>' + properties([
+      ['GPU usage', gpuUsageText(usage.gpuDevices)],
+      ['CPU usage', usagePercent(usage.cpuPercent)],
+      ['Memory usage', usageBytes(usage.memory)],
+    ]) + '</section>';
     detail += '<div class="drawer-section"><h3>Services</h3></div>' + table(['Service', 'State', 'Report'], [['Executor manager', row.status?.fem], ['Object cache', row.status?.objectCache]].map(([label, report]) => `<tr><td>${label}</td><td>${e(serviceState(report?.activeState))}</td><td>${e([report?.subState, report?.message].filter(Boolean).join(' · ') || undefined)}</td></tr>`));
     const devices = row.status?.pciDevices;
     detail += '<div class="drawer-section"><h3>PCI devices</h3></div>';

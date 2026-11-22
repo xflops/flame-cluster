@@ -82,7 +82,8 @@ test('dashboard sums reported capacity across pages and keeps cluster usage sepa
   const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===scoped('nodes'))reads.push(url.searchParams.get('page'))});
   await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
   await expect(page.getByRole('img',{name:'Nodes: 100 ready, 1 not ready, 101 total'})).toBeVisible();expect(reads).toEqual(['1','2']);
-  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['25%','4 GiB / 16 GiB','0%']);
+  await expect(page.locator('.usage-metric h3')).toHaveText(['GPU usage','CPU usage','Memory usage']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['0%','25%','4 GiB / 16 GiB']);
   await expect(page.getByRole('region',{name:'Memory usage'})).toContainText('Used / total · Reporting 2/101 nodes');
   await expect(page.getByRole('region',{name:'GPU usage'})).toContainText('1 reporting GPU · Reporting 1/101 nodes');
   await expect(page.getByRole('region',{name:'Current usage'}).getByRole('row')).toHaveCount(0);
@@ -96,7 +97,7 @@ test('dashboard isolates each selected cluster and shows unknown readings as hyp
   const node=structuredClone(inventory.nodes[0]);node.status.lastHeartbeatTime=new Date(now).toISOString();node.status.usage={cpuPercent:8,gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]};
   const missing={metadata:{name:'unreported'},readiness:'Pending'};
   await fixture(page,{...multiple,inventories:{training:{...inventory,nodes:[node]},production:{...productionInventory,nodes:[missing]}}});await page.goto('/');
-  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['8%','-','0%']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['0%','8%','-']);
   await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
   await expect(page.getByRole('img',{name:'Nodes: 0 ready, 1 not ready, 1 total'})).toBeVisible();
   await expect(page.locator('.usage-metric .metric-value')).toHaveText(['-','-','-']);
@@ -124,16 +125,16 @@ test('cluster usage averages CPU and GPU samples and sums memory bytes',async({p
     node('invalid','Ready',0,{cpuPercent:101,memory:{usedBytes:9,totalBytes:8},gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:null},{pciAddress:'unknown',utilizationPercent:50}]}),
     {metadata:{name:'missing-heartbeat'},readiness:'Ready',status:{usage:{cpuPercent:100}}}];
   await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
-  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['50%','4 GiB / 24 GiB','50%']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['50%','50%','4 GiB / 24 GiB']);
   await expect(page.getByRole('region',{name:'GPU usage'})).toContainText('3 reporting GPUs · Reporting 2/6 nodes');
   await page.getByRole('link',{name:'Nodes',exact:true}).click();await page.getByRole('button',{name:'pending',exact:true}).click();
-  await expect(page.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['100%','3 GiB / 16 GiB','0000:01:00.0 · 60%; 0000:02:00.0 · 90%']);
+  await expect(page.getByRole('region',{name:'Node resource usage'}).locator('dd')).toHaveText(['0000:01:00.0 · 60%; 0000:02:00.0 · 90%','100%','3 GiB / 16 GiB']);
 });
 test('cached current usage expires during an upstream failure',async({page})=>{
   const now=Date.parse('2030-01-01T00:00:00Z');await page.clock.install({time:new Date(now)});
   const node=structuredClone(inventory.nodes[0]);node.status.lastHeartbeatTime=new Date(now).toISOString();node.status.usage={cpuPercent:0,gpuDevices:[{pciAddress:'0000:01:00.0',utilizationPercent:0}]};
   await fixture(page,{inventories:{training:{...inventory,nodes:[node]}}});await page.goto('/');
-  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['0%','-','0%']);
+  await expect(page.locator('.usage-metric .metric-value')).toHaveText(['0%','0%','-']);
   await page.unroute('**/api/**');await fixture(page,{fail:true});await page.clock.fastForward(121000);
   await expect(page.locator('#notice')).toContainText('last successful data');
   await expect(page.locator('.usage-metric .metric-value')).toHaveText(['-','-','-']);

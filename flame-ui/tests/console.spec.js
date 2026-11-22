@@ -53,16 +53,17 @@ async function fixture(page, options={}) {
 test('root is the console and reads only its active Flame resource',async({page})=>{
   const paths=[];page.on('request',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))paths.push(new URL(r.url()).pathname)});
   await fixture(page);await page.goto('/');
-  await expect(page).toHaveURL(/\/#\/nodes$/);
-  await expect(page.getByRole('heading',{name:'Nodes',exact:true,level:1})).toBeVisible();
-  await expect(page.getByRole('button',{name:/flm-worker-01/})).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/dashboard$/);
+  await expect(page.getByRole('heading',{name:'Dashboard',exact:true,level:1})).toBeVisible();
+  await expect(page.getByRole('img',{name:'Nodes: 1 ready, 0 not ready, 1 total'})).toBeVisible();
+  await expect(page.locator('#nav-label')).toHaveCount(0);
   await expect(page.locator('#connection-name')).toHaveText('Training Flame');
   const clusters = page.getByRole('combobox', {name:'Cluster', exact:true});
   await expect(clusters).toBeEnabled();
   await expect(clusters.locator('option')).toHaveText(['Training Flame']);
   await expect(clusters).toHaveValue('training');
   expect(paths.every(p=>['/api/connections',scoped('connection'),scoped('nodes')].includes(p))).toBe(true);
-  await expect(page.locator('#navigation a')).toHaveText(['Nodes','Executors','Applications','Sessions','Settings']);
+  await expect(page.locator('#navigation a')).toHaveText(['Dashboard','Nodes','Executors','Applications','Sessions','Settings']);
   expect((await page.request.get('/dashboard')).status()).toBe(404);
   expect((await page.request.get('/console')).status()).toBe(404);
   await page.getByRole('link',{name:'Applications',exact:true}).click();
@@ -71,8 +72,50 @@ test('root is the console and reads only its active Flame resource',async({page}
   await expect(clusters).toHaveValue('training');
   await expect(page.locator('#breadcrumb-home')).toHaveAttribute('href','/');
   await page.locator('#breadcrumb-home').click();
-  await expect(page).toHaveURL(/\/#\/nodes$/);
-  await expect(page.getByRole('heading',{name:'Nodes',exact:true,level:1})).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/dashboard$/);
+  await expect(page.getByRole('heading',{name:'Dashboard',exact:true,level:1})).toBeVisible();
+});
+test('dashboard reads all node pages and labels partial capacity totals without losing zero GPU',async({page})=>{
+  const nodes=Array.from({length:101},(_,index)=>({metadata:{name:`worker-${index}`},readiness:index===100?'Pending':'Ready',status:index===0?{capacity:{gpu:0,cpu:8,memory:16*1024**3}}:index===1?{capacity:{cpu:4}}:{}}));
+  const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===scoped('nodes'))reads.push(url.searchParams.get('page'))});
+  await fixture(page,{inventories:{training:{...inventory,nodes}}});await page.goto('/');
+  await expect(page.getByRole('img',{name:'Nodes: 100 ready, 1 not ready, 101 total'})).toBeVisible();
+  expect(reads).toEqual(['1','2']);
+  for(const [label,value,count] of [['Total GPU','0','1/101'],['Total CPU','12','2/101'],['Total memory','16 GiB','1/101']]) {
+    const tile=page.getByRole('region',{name:label,exact:true});
+    await expect(tile.locator('.metric-value')).toHaveText(value);
+    await expect(tile).toContainText(`Reporting ${count} nodes`);
+  }
+  await expect(page.getByLabel('Filter by status')).toBeHidden();
+  await expect(page.locator('.table-footer')).toBeHidden();
+});
+test('dashboard keeps unknown totals unavailable and isolates selected cluster capacity',async({page})=>{
+  const missing={metadata:{name:'unreported'},readiness:'Pending'};
+  await fixture(page,{...multiple,inventories:{production:{...productionInventory,nodes:[missing]}}});await page.goto('/#/dashboard');
+  await expect(page.getByRole('region',{name:'Total GPU',exact:true}).locator('.metric-value')).toHaveText('0');
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('production');
+  await expect(page.getByRole('img',{name:'Nodes: 0 ready, 1 not ready, 1 total'})).toBeVisible();
+  await expect(page.locator('.dashboard-capacity .metric-value')).toHaveText(['-','-','-']);
+  await expect(page.locator('.dashboard-capacity p')).toHaveText(['Reporting 0/1 nodes','Reporting 0/1 nodes','Reporting 0/1 nodes']);
+  await page.getByRole('combobox',{name:'Cluster',exact:true}).selectOption('training');
+  await expect(page.getByRole('region',{name:'Total CPU',exact:true}).locator('.metric-value')).toHaveText('8');
+});
+test('dashboard refreshes periodically and refuses incomplete inventories',async({page})=>{
+  await page.clock.install();
+  await fixture(page);await page.goto('/#/dashboard');
+  await expect(page.getByRole('region',{name:'Total CPU',exact:true}).locator('.metric-value')).toHaveText('8');
+  await page.unroute('**/api/**');
+  const node=structuredClone(inventory.nodes[0]);node.status.capacity.cpu=12;
+  await fixture(page,{inventories:{training:{...inventory,nodes:[node]}}});
+  await page.clock.fastForward(15000);
+  await expect(page.getByRole('region',{name:'Total CPU',exact:true}).locator('.metric-value')).toHaveText('12');
+  await page.goto('/#/nodes');
+  await page.route('**/api/connections/training/nodes?**',route=>route.fulfill({json:{items:[node],total:2,hasNext:false}}));
+  await page.goto('/#/dashboard');
+  await expect(page.locator('#notice')).toContainText('incomplete');
+  // Cached complete totals stay explicitly stale rather than replacing them with a partial inventory.
+  await expect(page.locator('#notice')).toContainText('last successful data');
+  await expect(page.getByRole('region',{name:'Total CPU',exact:true}).locator('.metric-value')).toHaveText('12');
 });
 test('settings shows the configured cluster without requesting a resource inventory',async({page})=>{
   const paths=[];page.on('request',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))paths.push(new URL(r.url()).pathname)});
@@ -178,13 +221,13 @@ test('mutation errors remain visible and preserve session state',async({page})=>
 test('upstream failure is visible without fake healthy empty inventories',async({page})=>{
   await fixture(page,{fail:true});await page.goto('/');
   await expect(page.locator('#notice')).toContainText('FLM is unavailable');
-  await expect(page.getByRole('heading',{name:'Unable to load data'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Unable to load dashboard'})).toBeVisible();
   await expect(page.getByRole('heading',{name:'No nodes yet'})).toHaveCount(0);
 });
-test('invalid resource hashes normalize to nodes',async({page})=>{
+test('invalid resource hashes normalize to dashboard',async({page})=>{
   await fixture(page);await page.goto('/#/unknown');
-  await expect(page).toHaveURL(/#\/nodes$/);
-  await expect(page.getByRole('button',{name:/flm-worker-01/})).toBeVisible();
+  await expect(page).toHaveURL(/#\/dashboard$/);
+  await expect(page.getByRole('heading',{name:'Dashboard',exact:true,level:1})).toBeVisible();
 });
 
 test('resource navigation remains usable on a narrow screen',async({page})=>{
@@ -333,14 +376,14 @@ for(const [label,options,message] of [
   expect(paths).toEqual(['/api/connections']);
   await page.unroute('**/api/**');await fixture(page);
   await page.getByRole('button',{name:'Refresh data',exact:true}).click();
-  await expect(page.getByRole('button',{name:/flm-worker-01/})).toBeVisible();
+  await expect(page.getByRole('img',{name:'Nodes: 1 ready, 0 not ready, 1 total'})).toBeVisible();
 });
 
 test('the first configured Flame is selected in catalog order',async({page})=>{
   const paths=[];page.on('request',request=>paths.push(new URL(request.url()).pathname));
   await fixture(page,{...multiple,connections:[production,connection]});await page.goto('/');
   await expect(page.getByRole('combobox',{name:'Cluster',exact:true})).toHaveValue('production');
-  await expect(page.getByRole('button',{name:/prod-worker/})).toBeVisible();
+  await expect(page.getByRole('region',{name:'Total CPU',exact:true}).locator('.metric-value')).toHaveText('24');
   expect(paths.some(path=>path.startsWith(scoped('')))).toBe(false);
 });
 test('switching the selector aborts an in-flight session mutation',async({page})=>{

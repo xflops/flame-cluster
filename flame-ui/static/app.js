@@ -1,6 +1,7 @@
 import { views, escapeHtml as e, number as n, formatNumber as f, bytes, nameOf, idOf, stateOf, shim, parseRoute } from './model.js';
 const $ = selector => document.querySelector(selector);
 const paths = {
+  dashboard: '<path d="M3 13a9 9 0 1 1 18 0v6H3zM12 13l4-5"/><circle cx="12" cy="13" r="1"/>',
   settings: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
   applications: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   sessions: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
@@ -14,7 +15,30 @@ const pageSize = 12;
 const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
 function resourceUrl() {
+  if (state.view === 'dashboard') return `${apiBase()}/nodes?page=1&pageSize=100`;
   return `${apiBase()}/${state.view}?${new URLSearchParams({ page: state.page + 1, pageSize, state: state.filter })}`;
+}
+async function dashboardInventory(url, signal) {
+  const items = [], names = new Set();
+  let total;
+  for (let page = 1; page <= 500; page++) {
+    const request = new URL(url, location.origin); request.searchParams.set('page', page);
+    const data = await json(request.pathname + request.search, signal);
+    if (!Array.isArray(data.items) || data.items.length > 100 || !Number.isSafeInteger(data.total) || data.total < 0
+      || typeof data.hasNext !== 'boolean' || total !== undefined && total !== data.total) throw new Error('Node inventory changed or is incomplete. Refresh to retry.');
+    total = data.total;
+    for (const node of data.items) {
+      const name = node.metadata?.name;
+      if (!name || names.has(name)) throw new Error('Node inventory changed or is incomplete. Refresh to retry.');
+      names.add(name); items.push(node);
+    }
+    if (!data.hasNext) {
+      if (items.length !== total) throw new Error('Node inventory changed or is incomplete. Refresh to retry.');
+      return {items, total};
+    }
+    if (!data.items.length || items.length >= total) break;
+  }
+  throw new Error('Node inventory exceeds the dashboard limit or is incomplete.');
 }
 async function loadConnections() {
   if (catalogController) return;
@@ -73,6 +97,17 @@ function nodeStatus(row) {
     return `<span class="capacity-box"><span>${label}</span><strong>${e(formatted)}</strong></span>`;
   }).join('');
   return `<span class="node-status">${readiness(stateOf(row, 'nodes'), true)}<span class="node-capacities">${boxes}</span></span>`;
+}
+function dashboardContent(nodes) {
+  const total = nodes.length, ready = nodes.filter(node => stateOf(node, 'nodes') === 'Ready').length;
+  const other = total - ready, percentage = total ? ready * 100 / total : 0;
+  const capacities = [['gpu', 'Total GPU'], ['cpu', 'Total CPU'], ['memory', 'Total memory']].map(([key, label]) => {
+    const readings = nodes.map(node => node.status?.capacity?.[key]).filter(knownCapacity);
+    const sum = readings.reduce((result, value) => result + Number(value), 0);
+    const value = readings.length ? key === 'memory' ? bytes(sum) : f(sum) : '-';
+    return `<section class="metric dashboard-capacity" aria-label="${label}"><h2>${label}</h2><div class="metric-value">${e(value)}</div><p>Reporting ${readings.length}/${total} nodes</p></section>`;
+  }).join('');
+  return `<div class="dashboard-summary"><section class="metric" aria-label="Node readiness"><h2>Node readiness</h2><div class="readiness-body"><svg class="readiness-chart" viewBox="0 0 112 112" role="img" aria-label="Nodes: ${ready} ready, ${other} not ready, ${total} total"><circle class="donut-track ${total ? 'has-data' : ''}" cx="56" cy="56" r="43"/><circle class="donut-ready" cx="56" cy="56" r="43" pathLength="100" stroke-dasharray="${percentage} ${100 - percentage}" transform="rotate(-90 56 56)"/><text class="donut-total" x="56" y="54">${total}</text><text class="donut-label" x="56" y="73">nodes</text></svg><div class="readiness-legend"><div><span class="ready-circle good"></span>Ready<strong>${ready}</strong></div><div><span class="ready-circle bad"></span>Not ready<strong>${other}</strong></div></div></div></section>${capacities}</div>`;
 }
 const yesNo = value => value === true ? 'Yes' : value === false ? 'No' : '—';
 const cacheState = row => row.spec?.manageObjectCache === false ? 'Not managed' : row.status?.objectCache?.activeState;
@@ -173,14 +208,14 @@ function render() {
   $('#page-title').textContent = view.title;
   $('#page-description').textContent = view.description;
   $('#breadcrumb-detail').textContent = view.title;
-  const settings = state.view === 'settings';
+  const settings = state.view === 'settings', dashboard = state.view === 'dashboard';
   $('.data-panel').classList.toggle('settings-panel', settings);
   $('.data-panel').setAttribute('aria-label', settings ? 'Cluster settings' : 'Resource data');
   $('#content').classList.toggle('settings-grid', settings);
-  $('#section-title').textContent = settings ? 'Cluster connection' : `All ${view.title.toLowerCase()}`;
-  $('#row-count').hidden = settings;
-  $('.filters').hidden = settings;
-  $('.table-footer').hidden = settings;
+  $('#section-title').textContent = settings ? 'Cluster connection' : dashboard ? 'Cluster overview' : `All ${view.title.toLowerCase()}`;
+  $('#row-count').hidden = settings || dashboard;
+  $('.filters').hidden = settings || dashboard;
+  $('.table-footer').hidden = settings || dashboard;
   const filter = $('#status-filter');
   filter.innerHTML = '<option value="">All states</option>' + view.states.map(s => `<option>${e(s)}</option>`).join('');
   filter.value = state.filter;
@@ -221,6 +256,10 @@ function render() {
       try { await navigator.clipboard.writeText(join.command); status.textContent = 'Copied'; }
       catch { status.textContent = 'Select and copy the command above.'; }
     });
+    return;
+  }
+  if (dashboard) {
+    $('#content').innerHTML = data ? dashboardContent(data.items) : empty(errors.length ? 'Unable to load dashboard' : 'Loading dashboard', errors.length ? 'Refresh to retry. No partial node totals are shown.' : 'Reading reported node inventory…');
     return;
   }
   const rows = data?.items || [], total = data?.total ?? rows.length;
@@ -264,9 +303,9 @@ async function refresh() {
   pollController = controller;
   const timer = setTimeout(() => controller.abort(), 22000);
   state.loading = true; render();
-  async function load(key, url, apply) {
+  async function load(key, url, apply, read = json) {
     try {
-      const data = await json(url, controller.signal);
+      const data = await read(url, controller.signal);
       if (generation !== revision) return;
       apply(data); delete state.errors[key];
       if (key !== 'connection' && key !== 'join') {
@@ -285,7 +324,7 @@ async function refresh() {
   const view = state.view;
   await Promise.allSettled([
     load('connection', `${apiBase()}/connection`, data => { state.connection = data; }),
-    ...(view === 'settings' ? [load('join', `${apiBase()}/join`, data => { state.join = data; })] : [load(view, resourceUrl(), data => { state.pages[view] = data; })]),
+    ...(view === 'settings' ? [load('join', `${apiBase()}/join`, data => { state.join = data; })] : [load(view, resourceUrl(), data => { state.pages[view] = data; }, view === 'dashboard' ? dashboardInventory : json)]),
   ]);
   clearTimeout(timer);
   if (generation !== revision) return;

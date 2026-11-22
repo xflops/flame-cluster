@@ -1,12 +1,19 @@
 # Flame UI
 
-The root URL `/` opens the first configured Flame's Nodes view
-(`#/nodes`). The selector lists configured clusters only, such as
-`flame-1` and `flame-2`; there is no All clusters option or aggregate page.
+The root URL `/` opens the first configured Flame's Dashboard
+(`#/dashboard`). The selector lists configured clusters only, such as
+`flame-1` and `flame-2`; there is no All clusters option or cross-cluster summary.
 Switching clusters preserves the resource view while clearing pages, filters,
 drawers, pending requests, and credentials from the previous Flame.
 
-Navigation is Nodes, Executors, Applications, Sessions, Settings. Nodes lists
+Navigation is Dashboard, Nodes, Executors, Applications, Sessions, Settings.
+Dashboard reads the complete selected cluster node inventory in bounded pages.
+Its circular chart counts Ready versus all other node states. GPU, CPU, and
+memory totals use only `FlameWorker.status.capacity` reports; each total shows
+its reporting node count, and missing totals display `-` rather than zero.
+Unknown readings are excluded from partial totals. Periodic refresh and errors
+follow the resource pages; failed or incomplete inventories never produce
+partial dashboard counts. Nodes lists
 enrolled nodes in the selected cluster, including Pending workers that
 have not registered with FLM yet. It shows worker readiness, address, reported
 FEM/cache service states, runtimes, executor limit, and heartbeat. Unreported

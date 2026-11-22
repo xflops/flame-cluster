@@ -96,8 +96,8 @@ test.describe('live Flame deployment', () => {
     await expect(selector.locator('option')).toHaveText(configured.items.map(connection => connection.namespace || connection.displayName || connection.id));
     await expect(selector).toHaveValue(configured.items[0].id);
     expect((await initialNodes).ok()).toBe(true);
-    await expect(page).toHaveURL(/\/#\/nodes$/);
-    await expect(page.getByRole('heading', {name:'Nodes', exact:true, level:1})).toBeVisible();
+    await expect(page).toHaveURL(/\/#\/dashboard$/);
+    await expect(page.getByRole('heading', {name:'Dashboard', exact:true, level:1})).toBeVisible();
     await navigate(page, 'applications');
     const applicationRow = page.locator('#content tbody tr').filter({ has: page.getByRole('button', { name: new RegExp(`^${application.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`) }) });
     await expect(applicationRow).toBeVisible();

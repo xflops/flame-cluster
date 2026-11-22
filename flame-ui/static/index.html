@@ -14,16 +14,15 @@
   </header>
   <div class="shell">
     <aside class="sidebar" aria-label="Main navigation">
-      <div class="nav-label" id="nav-label">RESOURCES</div>
       <nav id="navigation"></nav>
       <div class="sidebar-bottom"><span class="flame-wordmark">Flame</span><p>Elastic compute.<br>One place to see it all.</p><a href="https://xflops.io" target="_blank" rel="noreferrer">xflops.io <span aria-hidden="true">↗</span></a></div>
     </aside>
     <main id="main" tabindex="-1">
       <div class="breadcrumb"><a id="breadcrumb-home" href="/">Console</a><span id="breadcrumb-detail"></span></div>
-      <div class="page-heading"><div><h1 id="page-title">Nodes</h1><p id="page-description">Enrolled workers and their reported status.</p></div><div class="page-tools"><span id="updated" class="updated">Connecting…</span><button id="auto-refresh" class="button subtle" aria-pressed="true">Auto-refresh on</button><button id="refresh" class="button" aria-label="Refresh data"><span aria-hidden="true">↻</span> Refresh</button></div></div>
+      <div class="page-heading"><div><h1 id="page-title">Dashboard</h1><p id="page-description">Node readiness and reported capacity for your cluster.</p></div><div class="page-tools"><span id="updated" class="updated">Connecting…</span><button id="auto-refresh" class="button subtle" aria-pressed="true">Auto-refresh on</button><button id="refresh" class="button" aria-label="Refresh data"><span aria-hidden="true">↻</span> Refresh</button></div></div>
       <div id="notice" class="notice" role="status" hidden></div>
       <section class="data-panel" aria-label="Resource data">
-        <div class="table-toolbar"><div class="section-title"><h2 id="section-title">All nodes</h2><span id="row-count" class="count">—</span></div><div class="filters"><label class="sr-only" for="status-filter">Filter by status</label><select id="status-filter"></select></div></div>
+        <div class="table-toolbar"><div class="section-title"><h2 id="section-title">Dashboard</h2><span id="row-count" class="count">—</span></div><div class="filters"><label class="sr-only" for="status-filter">Filter by status</label><select id="status-filter"></select></div></div>
         <div id="content" aria-live="polite"><div class="empty"><div class="spinner"></div><h3>Connecting to Flame</h3><p>Connecting to Flame…</p></div></div>
         <footer class="table-footer"><span id="table-caption">Live data from Flame</span><div class="pagination"><button id="previous" class="button small" disabled>← Previous</button><span id="page-number">Page 1</span><button id="next" class="button small" disabled>Next →</button></div></footer>
       </section>

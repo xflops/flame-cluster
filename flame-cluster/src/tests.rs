@@ -21,6 +21,37 @@ impl frontend_server::Frontend for Flame {
         request: GrpcRequest<GetSessionRequest>,
     ) -> Result<GrpcResponse<Session>, Status> {
         let id = request.into_inner().session_id;
+        if id.starts_with("event-") {
+            self.calls.lock().unwrap().push(format!("get:{id}"));
+            if id == "event-missing" {
+                return Err(Status::not_found("PRIVATE_SESSION_MISSING"));
+            }
+            if id == "event-failed" {
+                return Err(Status::internal("PRIVATE_SESSION_FAILURE"));
+            }
+            return Ok(GrpcResponse::new(Session {
+                metadata: Some(Metadata {
+                    id: id.clone(),
+                    name: "Public session name".into(),
+                }),
+                spec: Some(SessionSpec {
+                    application: "flmping".into(),
+                    ..Default::default()
+                }),
+                status: Some(SessionStatus {
+                    events: if id == "event-empty" {
+                        vec![]
+                    } else {
+                        vec![Event {
+                            code: 42,
+                            message: Some(format!("{}:{id}", self.name_prefix)),
+                            creation_time: 1795000000000,
+                        }]
+                    },
+                    ..Default::default()
+                }),
+            }));
+        }
         let state = if id.contains("closed") {
             1
         } else if id.contains("suspended") {
@@ -208,11 +239,12 @@ impl frontend_server::Frontend for Flame {
         if request.session_id == "secret-error" {
             return Err(Status::internal("SYNTHETIC_SECRET_TASKS"));
         }
-        let count = if request.session_id == "large-session" {
-            1000
-        } else {
-            3
-        };
+        let count =
+            if request.session_id == "large-session" || request.session_id.starts_with("event-") {
+                1000
+            } else {
+                3
+            };
         let mut paging = request.paging.unwrap();
         if request.session_id == "missing-paging" {
             return Ok(GrpcResponse::new(TaskList::default()));
@@ -223,7 +255,14 @@ impl frontend_server::Frontend for Flame {
                 paging: Some(paging),
             }));
         }
-        assert_eq!(paging.limit, 12, "request only the displayed page");
+        if request.session_id.starts_with("event-") {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("page:{}:{}", paging.number, paging.limit));
+        } else {
+            assert_eq!(paging.limit, 12, "request only the displayed page");
+        }
         let offset = (paging.number - 1) * i64::from(paging.limit);
         paging.total = Some(count);
         let tasks = (0..count)
@@ -743,9 +782,12 @@ async fn invalid_filters_and_paging_are_rejected_before_connecting() {
         );
     }
     assert_eq!(
-        get(app, "/api/sessions/session/tasks?state=Running")
-            .await
-            .0,
+        get(
+            app,
+            "/api/connections/flame/sessions/session/tasks?state=Running"
+        )
+        .await
+        .0,
         StatusCode::BAD_REQUEST
     );
 }
@@ -754,21 +796,32 @@ async fn invalid_filters_and_paging_are_rejected_before_connecting() {
 async fn tasks_use_native_bounded_pages_and_require_upstream_totals() {
     let (state, stop) = frontend(Flame::default()).await;
     let app = router(state);
-    let (status, first) = get(app.clone(), "/api/sessions/large-session/tasks").await;
+    let (status, first) = get(
+        app.clone(),
+        "/api/connections/flame/sessions/large-session/tasks",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(first["items"].as_array().unwrap().len(), 12);
     assert_eq!(first["items"][0]["metadata"]["id"], "999");
     assert_eq!(first["total"], 1000);
     assert_eq!(first["hasNext"], true);
-    let (status, last) = get(app.clone(), "/api/sessions/large-session/tasks?page=84").await;
+    let (status, last) = get(
+        app.clone(),
+        "/api/connections/flame/sessions/large-session/tasks?page=84",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(last["items"].as_array().unwrap().len(), 4);
     assert_eq!(last["hasNext"], false);
     for session in ["missing-paging", "missing-total"] {
         assert_eq!(
-            get(app.clone(), &format!("/api/sessions/{session}/tasks"))
-                .await
-                .0,
+            get(
+                app.clone(),
+                &format!("/api/connections/flame/sessions/{session}/tasks")
+            )
+            .await
+            .0,
             StatusCode::BAD_GATEWAY
         );
     }
@@ -1019,7 +1072,10 @@ async fn upstream_secrets_are_absent_from_responses_and_logs() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
     {
         let (state, stop) = frontend(Flame::default()).await;
-        for path in ["/api/executors", "/api/sessions/secret-error/tasks"] {
+        for path in [
+            "/api/executors",
+            "/api/connections/flame/sessions/secret-error/tasks",
+        ] {
             let (status, body) = get(router(state.clone()), path).await;
             assert_eq!(status, StatusCode::BAD_GATEWAY);
             assert_eq!(body, json!({"error":"Flame upstream request failed"}));
@@ -1738,4 +1794,159 @@ async fn unavailable_or_invalid_configuration_preserves_healthy_connection_metad
         );
         assert!(!metadata.to_string().contains("PRIVATE"));
     }
+}
+
+#[tokio::test]
+async fn session_detail_and_task_pages_use_independent_scoped_native_rpcs() {
+    use std::sync::{Arc, Mutex};
+    let first_calls = Arc::new(Mutex::new(Vec::new()));
+    let second_calls = Arc::new(Mutex::new(Vec::new()));
+    let (first, stop_first) = frontend(Flame {
+        name_prefix: "first".into(),
+        calls: first_calls.clone(),
+    })
+    .await;
+    let (second, stop_second) = frontend(Flame {
+        name_prefix: "second".into(),
+        calls: second_calls.clone(),
+    })
+    .await;
+    let app = fleet_router(vec![("first".into(), first), ("second".into(), second)]).unwrap();
+    for (uri, message, id) in [
+        (
+            "/api/connections/first/sessions/event-one",
+            "first:event-one",
+            "event-one",
+        ),
+        (
+            "/api/connections/second/sessions/event-two?connection=first&session=event-one",
+            "second:event-two",
+            "event-two",
+        ),
+    ] {
+        let (status, data) = get(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(data.as_object().unwrap().len(), 3);
+        assert_eq!(data["metadata"]["id"], id);
+        assert_eq!(data["spec"]["application"], "flmping");
+        assert_eq!(
+            data["status"]["events"],
+            json!([{"code":42,"message":message,"creation_time":1795000000000_i64}])
+        );
+        assert!(data["spec"].get("common_data").is_none());
+        assert!(data.get("token").is_none());
+    }
+    assert_eq!(first_calls.lock().unwrap().as_slice(), ["get:event-one"]);
+    assert_eq!(second_calls.lock().unwrap().as_slice(), ["get:event-two"]);
+    let (status, tasks) = get(
+        app.clone(),
+        "/api/connections/second/sessions/event-two/tasks?page=21&pageSize=7&connection=first",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tasks["page"], 21);
+    assert_eq!(tasks["pageSize"], 7);
+    assert_eq!(tasks["total"], 1000);
+    assert_eq!(tasks["hasNext"], true);
+    assert!(tasks["observedAt"].is_string());
+    let items = tasks["items"].as_array().unwrap();
+    assert_eq!(items.len(), 7);
+    assert_eq!(items[0]["metadata"]["id"], "859");
+    assert_eq!(items[6]["metadata"]["id"], "853");
+    for task in items {
+        assert_eq!(task.as_object().unwrap().len(), 3);
+        assert_eq!(
+            task["spec"].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["session_id"]
+        );
+        assert!(task.get("input").is_none());
+        assert!(task.get("output").is_none());
+    }
+    assert_eq!(
+        second_calls.lock().unwrap().as_slice(),
+        ["get:event-two", "tasks:event-two", "page:21:7"]
+    );
+    assert_eq!(first_calls.lock().unwrap().as_slice(), ["get:event-one"]);
+    let (status, empty) = get(app.clone(), "/api/connections/second/sessions/event-empty").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty["status"]["events"], json!([]));
+    for uri in [
+        "/api/sessions/event-one",
+        "/api/sessions/event-one/tasks",
+        "/api/sessions/event-one/events",
+        "/api/connections/first/sessions/event-one/events",
+    ] {
+        assert_eq!(get(app.clone(), uri).await.0, StatusCode::NOT_FOUND);
+    }
+    let _ = stop_first.send(());
+    let _ = stop_second.send(());
+}
+
+#[tokio::test]
+async fn session_detail_failures_are_generic_and_invalid_requests_never_reach_frontend() {
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (state, stop) = frontend(Flame {
+        name_prefix: String::new(),
+        calls: calls.clone(),
+    })
+    .await;
+    let app = router(state);
+    for (id, expected) in [
+        ("event-missing", StatusCode::NOT_FOUND),
+        ("event-failed", StatusCode::BAD_GATEWAY),
+    ] {
+        let (status, error) = get(
+            app.clone(),
+            &format!("/api/connections/flame/sessions/{id}"),
+        )
+        .await;
+        assert_eq!(status, expected);
+        assert_eq!(
+            error,
+            json!({"error":"Session details are unavailable. Refresh and retry."})
+        );
+    }
+    for id in ["event-%0Ainvalid".to_owned(), "x".repeat(257)] {
+        for suffix in ["", "/tasks"] {
+            let (status, error) = get(
+                app.clone(),
+                &format!("/api/connections/flame/sessions/{id}{suffix}"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(error, json!({"error":"Invalid session ID"}));
+        }
+    }
+    for query in [
+        "page=0",
+        "pageSize=101",
+        "pageSize=0",
+        "page=1000001&pageSize=2",
+        "state=Open",
+        "search=word",
+    ] {
+        assert_eq!(
+            get(
+                app.clone(),
+                &format!("/api/connections/flame/sessions/event-one/tasks?{query}")
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        ["get:event-missing", "get:event-failed"]
+    );
+    for id in ["secret-error", "missing-paging", "missing-total"] {
+        let (status, error) = get(
+            app.clone(),
+            &format!("/api/connections/flame/sessions/{id}/tasks"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(error, json!({"error":"Flame upstream request failed"}));
+    }
+    let _ = stop.send(());
 }

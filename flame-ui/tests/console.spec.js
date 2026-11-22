@@ -27,7 +27,9 @@ async function fixture(page, options={}) {
     }
     const selected=connections.find(item=>item.id===segments[3]), data=inventories[selected?.id];
     if(!selected || segments[2]!=='connections') return route.fulfill({status:404,json:{error:'Unknown connection'}});
-    if(options.wait?.[`${selected.id}/${resource}`]) await options.wait[`${selected.id}/${resource}`];
+    const sessionDetail = segments[4]==='sessions' && segments.length===6;
+    const wait = options.wait?.[`${selected.id}/${sessionDetail ? 'session-detail' : resource}`];
+    if(wait) await wait;
     if(resource==='connection') return route.fulfill({json:selected});
     if(resource==='flame.yaml') return options.downloadFail
       ? route.fulfill({status:503,contentType:'application/yaml',body:'PRIVATE-KEY-ERROR-BODY'})
@@ -42,7 +44,20 @@ async function fixture(page, options={}) {
       return route.fulfill({json:{session:data.sessions[0]||null}});
     }
     const currentPage=Number(url.searchParams.get('page')||1),pageSize=Number(url.searchParams.get('pageSize')||12);
-    if(resource==='tasks') return route.fulfill({json:{items:[{metadata:{id:options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`},status:{state:2,creation_time:1794614400000}}],page:currentPage,pageSize,total:null,hasNext:currentPage===1}});
+    if(sessionDetail) {
+      const session = structuredClone(data.sessions.find(session => session.metadata.id === decodeURIComponent(resource)));
+      if(!session) return route.fulfill({status:404,json:{error:'Unknown session'}});
+      Object.assign(session.spec,options.sessionSpec?.[selected.id]);
+      session.status.events = options.events?.[selected.id] || [];
+      return route.fulfill({json:session});
+    }
+    if(resource==='tasks' && segments[4]==='sessions') {
+      const id = options.taskPrefix ? `${selected.id}-task-${currentPage}` : `task-${currentPage}`;
+      const created = 1794614400000;
+      const items = [{metadata:{id},status:{state:2,creation_time:created,completion_time:currentPage===1?created+1250:null}}];
+      if(currentPage===1) items.push({metadata:{id:`${id}-same-second`},status:{state:2,creation_time:created,completion_time:created}});
+      return route.fulfill({json:{items,page:currentPage,pageSize,total:3,hasNext:currentPage===1}});
+    }
     if(options.fail) return route.fulfill({status:502,json:{error:'FLM is unavailable'}});
     if(!Object.hasOwn(data,resource)) return route.fulfill({status:404,json:{error:'Unknown resource'}});
     if(options.delays?.[resource]) await new Promise(resolve=>setTimeout(resolve,options.delays[resource]));
@@ -220,13 +235,65 @@ test('nodes show overall readiness and capacity with service status in details',
   await expect(capacity.locator('dd')).toHaveText(['0','8','16 GiB']);
 });
 test('session task drawer retains task paging and progress',async({page})=>{
-  await fixture(page);await page.goto('/#/sessions');
+  const session=structuredClone(inventory.sessions[0]);
+  Object.assign(session.spec,{min_instances:2,max_instances:6,batch_size:3,resreq:{gpu:0,cpu:4,memory:2*1024**3}});
+  await fixture(page,{inventories:{training:{...inventory,sessions:[session]}}});await page.goto('/#/sessions');
   await expect(page.getByRole('progressbar').first()).toHaveAttribute('aria-valuenow','76');
   await page.getByRole('button',{name:'session-42',exact:true}).click();
-  await expect(page.getByRole('dialog')).toContainText('task-1');
+  const scheduling=page.getByRole('region',{name:'Scheduling'});
+  await expect(scheduling.locator('dt')).toHaveText(['Priority','Minimum instances','Maximum instances','Batch size','GPU request','CPU request','Memory request']);
+  await expect(scheduling.locator('dd')).toHaveText(['1','2','6','3','0','4','2 GiB']);
+  const tasks=page.locator('#tasks');
+  await expect(tasks.getByRole('columnheader',{name:'Duration',exact:true})).toBeVisible();
+  await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('1.25 s');
+  await expect(tasks.locator('tbody tr').nth(1).getByRole('cell').last()).toHaveText('<1 s');
   await page.getByRole('button',{name:'Next tasks →'}).click();
-  await expect(page.getByRole('dialog')).toContainText('task-2');
+  await expect(tasks).toContainText('task-2');
+  await expect(tasks.locator('tbody tr').first().getByRole('cell').last()).toHaveText('-');
   await expect(page.getByRole('button',{name:'Next tasks →'})).toBeDisabled();
+});
+test('session drawer separates session fields and events from task pagination',async({page})=>{
+  const path=scoped('sessions/session-42'),tasksPath=path+'/tasks';
+  const requests=[];
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.pathname.startsWith(path)) requests.push(url.pathname+url.search);
+  });
+  const eventsByCluster={training:[
+    {creation_time:1794614400000,code:101,message:'Session queued'},
+    {creation_time:1794614401000,code:203,message:'Worker allocated <worker>'},
+  ]};
+  const sessionSpec={training:{}};
+  const detail=deferred();
+  await fixture(page,{events:eventsByCluster,sessionSpec,wait:{'training/session-detail':detail.promise}});
+  await page.goto('/#/sessions');
+  await page.getByRole('button',{name:'session-42',exact:true}).click();
+  const scheduling=page.getByRole('region',{name:'Scheduling'});
+  await expect(page.locator('#tasks')).toContainText('task-1');
+  await expect(scheduling).toHaveCount(0);
+  detail.resolve();
+  await expect(scheduling.locator('dd')).toHaveText(['1','0','Unlimited','1','Cluster default']);
+  const events=page.getByRole('region',{name:'Session events',exact:true});
+  await expect(events.getByRole('columnheader')).toHaveText(['Time','Code','Message']);
+  await expect(events.locator('tbody tr td:last-child')).toHaveText(['Worker allocated <worker>','Session queued']);
+  await expect(events.locator('tbody tr td:nth-child(2)')).toHaveText(['203','101']);
+  await expect(page.locator('#tasks')).toContainText('task-1');
+  await page.getByRole('button',{name:'Next tasks →'}).click();
+  await expect(page.locator('#tasks')).toContainText('task-2');
+  expect(requests.filter(request=>request===path)).toHaveLength(1);
+  expect(requests.filter(request=>request.startsWith(tasksPath))).toEqual([
+    `${tasksPath}?page=1&pageSize=12`,`${tasksPath}?page=2&pageSize=12`
+  ]);
+  eventsByCluster.training=[];
+  sessionSpec.training.priority=7;
+  await page.getByRole('button',{name:'Refresh details'}).click();
+  await expect(events).toContainText('No events yet.');
+  await expect(scheduling.locator('dd').first()).toHaveText('7');
+  await expect(page.locator('#tasks')).toContainText('task-1');
+  expect(requests.filter(request=>request===path)).toHaveLength(2);
+  expect(requests.filter(request=>request.startsWith(tasksPath))).toEqual([
+    `${tasksPath}?page=1&pageSize=12`,`${tasksPath}?page=2&pageSize=12`,`${tasksPath}?page=1&pageSize=12`
+  ]);
 });
 test('session commands use direct FLM actions and update available commands',async({page})=>{
   await fixture(page);await page.goto('/#/sessions');page.on('dialog',dialog=>dialog.accept());
@@ -347,7 +414,7 @@ test('late connection and resource responses cannot overwrite the selected Flame
   await expect(page.getByRole('button',{name:/flmping/})).toHaveCount(0);
   await expect(selector).toHaveValue('production');
 });
-test('switching Flames cancels old task drawers and ignores late task responses',async({page})=>{
+test('switching Flames cancels session details and ignores late responses',async({page})=>{
   const pending=deferred();
   await ignoreTrainingAbort(page);
   await fixture(page,{...multiple,wait:{'training/tasks':pending.promise}});

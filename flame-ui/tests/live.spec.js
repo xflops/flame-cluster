@@ -80,7 +80,8 @@ test.describe('live Flame deployment', () => {
   test.afterEach(async ({ page }) => {
     const paths = requests.get(page);
     expect(paths.length, 'the browser must request live console APIs').toBeGreaterThan(0);
-    expect(paths.every(path => /^\/api\/connections(?:\/[^/]+\/(?:connection|nodes|applications|sessions|executors)(?:\/[^/]+\/(?:tasks|actions\/(?:suspend|resume|close|delete)))?)?$/.test(path)), JSON.stringify(paths)).toBe(true);
+    const scopedPath = /^\/api\/connections\/[^/]+\/(?:connection|nodes|applications|executors|sessions(?:\/[^/]+(?:\/(?:tasks|actions\/(?:suspend|resume|close|delete)))?)?)$/;
+    expect(paths.every(path => path === '/api/connections' || scopedPath.test(path)), JSON.stringify(paths)).toBe(true);
     expect(paths.some(path => /\/(?:dashboard|clusters)(?:\/|$)/.test(path)), 'no legacy resource paths').toBe(false);
     expect(failures.get(page), 'all live browser API responses must succeed').toEqual([]);
     expect(new URL(page.url()).pathname, 'console is served at the root URL').toBe('/');
@@ -161,12 +162,19 @@ test.describe('live Flame deployment', () => {
     await expect(row).toContainText('4 / 4 completed');
     await expect(row.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
     const connectionID = await page.getByRole('combobox', {name:'Cluster', exact:true}).inputValue();
-    const taskPath = `/api/connections/${encodeURIComponent(connectionID)}/sessions/${encodeURIComponent(completedSession)}/tasks`;
-    const loaded = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === taskPath);
+    const detailPath = `/api/connections/${encodeURIComponent(connectionID)}/sessions/${encodeURIComponent(completedSession)}`;
+    const requestPath = path => page.waitForResponse(response =>
+      response.request().method() === 'GET' && new URL(response.url()).pathname === path);
+    const detailLoaded = requestPath(detailPath);
+    const tasksLoaded = requestPath(detailPath + '/tasks');
     await row.getByRole('button', { name: completedSession, exact: true }).click();
-    const response = await loaded;
-    expect(response.ok()).toBe(true);
-    const tasks = await response.json();
+    const [detailResponse, taskResponse] = await Promise.all([detailLoaded, tasksLoaded]);
+    expect(detailResponse.ok()).toBe(true);
+    expect(taskResponse.ok()).toBe(true);
+    const detail = await detailResponse.json();
+    const tasks = await taskResponse.json();
+    expect(detail.metadata.id).toBe(completedSession);
+    expect(detail.status.events).toEqual(expect.any(Array));
     expect(tasks.total).toBe(4);
     expect(tasks.items).toHaveLength(4);
     expect(tasks.hasNext).toBe(false);

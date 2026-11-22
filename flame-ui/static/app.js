@@ -10,7 +10,11 @@ const paths = {
 };
 const icon = kind => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[kind] || paths.applications}</svg>`;
 const state = { view: parseRoute(location.hash), connections: null, connectionId: null, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, auto: true, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null };
-let catalogController, pollController, taskController, actionController, downloadController, revision = 0;
+let catalogController, pollController, actionController, downloadController, revision = 0;
+const sessionRequests = {};
+function cancelSessionRequests() {
+  Object.values(sessionRequests).forEach(controller => controller.abort());
+}
 const pageSize = 12;
 const apiBase = () => `/api/connections/${encodeURIComponent(state.connectionId)}`;
 const pageCache = new Map();
@@ -66,7 +70,7 @@ async function loadConnections() {
 }
 function selectConnection(id) {
   if (id === state.connectionId || !state.connections?.some(connection => connection.id === id)) return;
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
+  revision++; pollController?.abort(); cancelSessionRequests(); actionController?.abort(); downloadController?.abort();
   pageCache.clear();
   Object.assign(state, {connectionId: id, connection: null, join: null, downloading: false, downloadStatus: '', pages: {}, filter: '', page: 0, loading: false, errors: {}, lastUpdate: null, drawer: null, action: null});
   $('#details').close(); $('#detail-content').replaceChildren();
@@ -83,11 +87,26 @@ const badge = label => {
   return `<span class="badge ${tone}">${e(label)}</span>`;
 };
 const readiness = label => `<span class="readiness" title="${e(label)}" role="img" aria-label="${e(label)}"><span class="ready-circle ${label === 'Ready' ? 'good' : 'bad'}" aria-hidden="true"></span><span>${e(label)}</span></span>`;
-const date = value => {
+const date = (value, seconds = false) => {
   if (!value) return '—';
   const parsed = new Date(Number.isFinite(Number(value)) ? Number(value) : value);
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', ...(seconds ? {second: '2-digit'} : {}) });
 };
+function taskDuration(status) {
+  const created = Number(status?.creation_time);
+  const completed = Number(status?.completion_time);
+  if (!Number.isSafeInteger(created) || !Number.isSafeInteger(completed) || created <= 0 || completed < created) return '-';
+  const ms = completed - created;
+  // Flame can store timestamps at whole-second precision.
+  if (ms === 0) return created % 1000 === 0 ? '<1 s' : '<1 ms';
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60000) return `${f(ms / 1000)} s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor(ms / 1000) % 60;
+  return minutes >= 60
+    ? `${Math.floor(minutes / 60)} h ${minutes % 60} m`
+    : `${minutes} m ${seconds} s`;
+}
 const workerRuntimes = row => row.spec?.shims?.map(value => ({host:'Host',cri:'CRI'}[value] || value)).join(', ') || '—';
 const knownCapacity = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0;
 const formatCapacity = (key, value) => knownCapacity(value) ? (key === 'memory' ? bytes(value) : f(value)) : '-';
@@ -389,7 +408,7 @@ function queryChanged() {
 }
 const properties = rows => `<dl class="properties">${rows.map(([label, value]) => `<dt>${e(label)}</dt><dd>${e(value)}</dd>`).join('')}</dl>`;
 function openDetails(row) {
-  taskController?.abort();
+  cancelSessionRequests();
   state.drawer = row;
   $('#detail-title').textContent = nameOf(row);
   $('#detail-kind').textContent = state.view.slice(0, -1).toUpperCase();
@@ -432,39 +451,89 @@ function openDetails(row) {
   } else if (state.view === 'executors') {
     detail += properties([['Node', row.spec?.node], ['Application', row.spec?.application], ['Session', row.status?.session_id], ['Runtime', shim(row.spec?.shim)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)], ['GPU request', n(row.spec?.resreq?.gpu)]]);
   } else {
-    detail += properties([['Application', row.spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)], ['Priority', n(row.spec?.priority)], ['CPU request', n(row.spec?.resreq?.cpu)], ['Memory request', bytes(row.spec?.resreq?.memory)]]);
-    detail += `${sessionProgress(row.status, true)}<div class="drawer-section"><h3>Tasks</h3><button class="button small" id="refresh-tasks">Refresh tasks</button></div><div id="tasks"></div>`;
-    if (row.status?.events?.length) detail += '<div class="drawer-section"><h3>Session events</h3></div><pre>' + e(row.status.events.map(event => `${date(event.creation_time)}  ${event.message || event.code}`).join('\n')) + '</pre>';
+    detail = `<p id="session-note" role="status" hidden></p><div id="session-summary"></div><div class="drawer-section"><h3>Tasks</h3><button class="button small" id="refresh-session">Refresh details</button></div><p id="tasks-note" role="status" hidden></p><div id="tasks"></div><section aria-label="Session events"><div class="drawer-section"><h3>Events</h3></div><div id="events"></div></section>`;
   }
   $('#detail-content').innerHTML = detail;
   if (!$('#details').open) $('#details').showModal();
   if (state.view === 'sessions') {
-    $('#refresh-tasks').addEventListener('click', () => loadTasks(row));
-    loadTasks(row);
+    const refreshDetails = () => {
+      loadSessionInfo(row);
+      loadSessionTasks(row);
+    };
+    $('#refresh-session').addEventListener('click', refreshDetails);
+    refreshDetails();
   }
 }
-async function loadTasks(row, page = 1) {
-  taskController?.abort();
-  taskController = new AbortController();
-  const controller = taskController;
-  const signal = controller.signal;
-  const target = $('#tasks');
-  target.innerHTML = '<div class="empty"><div class="spinner"></div><p>Loading tasks…</p></div>';
-  const timer = setTimeout(() => controller.abort(), 23000);
+
+function sessionSummary(row) {
+  const spec = row.spec;
+  const resources = spec?.resreq;
+  let detail = badge(stateOf(row, 'sessions')) + properties([['Application', spec?.application], ['Created', date(row.status?.creation_time)], ['Completed', date(row.status?.completion_time)]]);
+  detail += '<section aria-label="Scheduling"><div class="drawer-section"><h3>Scheduling</h3></div>' + properties([
+    ['Priority', spec ? n(spec.priority) : '-'],
+    ['Minimum instances', spec ? n(spec.min_instances) : '-'],
+    ['Maximum instances', spec ? spec.max_instances ?? 'Unlimited' : '-'],
+    ['Batch size', spec ? n(spec.batch_size) || 1 : '-'],
+    ...(resources ? [
+      ['GPU request', n(resources.gpu)],
+      ['CPU request', n(resources.cpu)],
+      ['Memory request', bytes(resources.memory)],
+    ] : [['Resource request', spec ? 'Cluster default' : '-']]),
+  ]) + '</section>';
+  return detail + sessionProgress(row.status, true);
+}
+
+async function loadSessionPart(row, part, suffix, render) {
+  sessionRequests[part]?.abort();
+  const controller = new AbortController();
+  sessionRequests[part] = controller;
+  const current = () => !controller.signal.aborted && state.drawer === row;
+  const note = $(`#${part}-note`);
+  note.hidden = false;
+  note.textContent = 'Loading…';
   try {
-    const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}/tasks?page=${page}&pageSize=${pageSize}`, signal);
-    if (signal.aborted || state.drawer !== row) return;
-    const tasks = data.items;
-    target.innerHTML = tasks.length ? table(['Task', 'State', 'Created', 'Completed'], tasks.map(task => `<tr><td class="mono">${e(idOf(task))}</td><td>${badge(stateOf(task, 'tasks'))}</td><td>${date(task.status?.creation_time)}</td><td>${date(task.status?.completion_time)}</td></tr>`)) : empty(page === 1 ? 'No tasks yet' : 'No tasks on this page', page === 1 ? 'Tasks submitted to this session will appear here.' : 'Use Previous tasks to return to an earlier page.', 'sessions');
-    target.insertAdjacentHTML('beforeend', `<div class="pagination task-pagination"><button class="button small" id="tasks-previous" ${page === 1 ? 'disabled' : ''}>← Previous tasks</button><span>Page ${page}</span><button class="button small" id="tasks-next" ${data.hasNext ? '' : 'disabled'}>Next tasks →</button></div>`);
-    $('#tasks-previous').addEventListener('click', () => loadTasks(row, page - 1));
-    $('#tasks-next').addEventListener('click', () => loadTasks(row, page + 1));
-  } catch (error) {
-    if (taskController === controller && state.drawer === row) target.innerHTML = `<div class="notice">${e(error.name === 'AbortError' ? 'Task request timed out. Use Refresh tasks to retry.' : error.message)}</div>`;
-  } finally { clearTimeout(timer); }
+    const data = await json(`${apiBase()}/sessions/${encodeURIComponent(idOf(row))}${suffix}`,
+      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]));
+    if (!current()) return;
+    render(data);
+    note.hidden = true;
+  } catch {
+    if (current()) note.textContent = `Unable to load ${part}.`;
+  }
+}
+
+function loadSessionInfo(row) {
+  return loadSessionPart(row, 'session', '', session => {
+    const events = (session.status?.events || []).sort((a, b) => n(b.creation_time) - n(a.creation_time));
+    $('#session-summary').innerHTML = sessionSummary(session);
+    $('#events').innerHTML = events.length ? table(['Time', 'Code', 'Message'], events.map(event =>
+      `<tr><td>${date(event.creation_time, true)}</td><td>${e(event.code ?? '-')}</td><td>${e(event.message || '-')}</td></tr>`
+    )) : '<p class="detail-note">No events yet.</p>';
+  });
+}
+
+function loadSessionTasks(row, page = 1) {
+  return loadSessionPart(row, 'tasks', `/tasks?page=${page}&pageSize=${pageSize}`,
+    data => renderTaskPage(row, data));
+}
+
+function renderTaskPage(row, data) {
+  const {page, items: tasks} = data;
+  const target = $('#tasks');
+  target.innerHTML = tasks.length ? table(['Task', 'State', 'Created', 'Completed', 'Duration'], tasks.map(task => `
+    <tr>
+      <td class="mono">${e(idOf(task))}</td>
+      <td>${badge(stateOf(task, 'tasks'))}</td>
+      <td>${date(task.status?.creation_time)}</td>
+      <td>${date(task.status?.completion_time)}</td>
+      <td title="Elapsed time from task creation to completion">${e(taskDuration(task.status))}</td>
+    </tr>`)) : empty(page === 1 ? 'No tasks yet' : 'No tasks on this page', page === 1 ? 'Tasks submitted to this session will appear here.' : 'Use Previous tasks to return to an earlier page.', 'sessions');
+  target.insertAdjacentHTML('beforeend', `<div class="pagination task-pagination"><button class="button small" id="tasks-previous" ${page === 1 ? 'disabled' : ''}>← Previous tasks</button><span>Page ${page}</span><button class="button small" id="tasks-next" ${data.hasNext ? '' : 'disabled'}>Next tasks →</button></div>`);
+  $('#tasks-previous').addEventListener('click', () => loadSessionTasks(row, page - 1));
+  $('#tasks-next').addEventListener('click', () => loadSessionTasks(row, page + 1));
 }
 function route() {
-  revision++; pollController?.abort(); taskController?.abort(); actionController?.abort(); downloadController?.abort();
+  revision++; pollController?.abort(); cancelSessionRequests(); actionController?.abort(); downloadController?.abort();
   state.view = parseRoute(location.hash);
   if (location.hash !== `#/${state.view}`) history.replaceState(null, '', `${location.pathname}${location.search}#/${state.view}`);
   Object.assign(state, {loading: false, filter: '', page: 0, errors: {}, drawer: null, action: null, join: null, downloading: false, downloadStatus: ''});
@@ -479,7 +548,7 @@ $('#auto-refresh').addEventListener('click', () => { state.auto = !state.auto; r
 $('#previous').addEventListener('click', () => { state.page--; queryChanged(); });
 $('#next').addEventListener('click', () => { state.page++; queryChanged(); });
 $('#close-details').addEventListener('click', () => $('#details').close());
-$('#details').addEventListener('close', () => { state.drawer = null; taskController?.abort(); });
+$('#details').addEventListener('close', () => { state.drawer = null; cancelSessionRequests(); });
 $('#details').addEventListener('click', event => { if (event.target === $('#details') && event.clientX < $('#details').getBoundingClientRect().left) $('#details').close(); });
 window.addEventListener('hashchange', route);
 window.addEventListener('resize', renderNavigation);

@@ -87,9 +87,13 @@ or client-config Secrets require the corresponding scoped Kubernetes identity.
 - `GET /api/connections/{id}/flame.yaml`: selected client YAML as a `flame.yaml` attachment.
 - `GET /api/connections/{id}/nodes`: namespace-scoped FlameWorkers filtered by the selected Flame, with raw resource fields plus `readiness` (Pending, Ready, Not ready, Disabled, or Deleting).
 - `GET /api/connections/{id}/{applications|sessions|executors}`: selected FLM resources.
-- `GET /api/connections/{id}/sessions/{session}/tasks`.
+- `GET /api/connections/{id}/sessions/{session}`: native `GetSession` snapshot returned directly as `{metadata, spec, status}`, including lifecycle events in `status.events`. The wire subset excludes session common data and tokens. Missing sessions return 404; upstream failures stay generic. This route does not fetch tasks.
+- `GET /api/connections/{id}/sessions/{session}/tasks?page=1&pageSize=12`: one bounded native `ListTasks` metadata page, returned directly as `{items, page, pageSize, total, hasNext, observedAt}` without task payloads. Task paging does not refetch session details.
 - `POST /api/connections/{id}/sessions/{session}/actions/{suspend|resume|close|delete}` with JSON `{}`.
 - `GET /healthz`: process health, independent of FLM availability.
+
+Session details and task reads require the connection ID. Unscoped session detail
+and task URLs, and the separate `/events` URL, are not exposed.
 
 Existing `/api/connection`, `/api/join`, `/api/flame.yaml`, and resource/action paths remain aliases
 for the first configured connection. Unknown connection IDs return 404. Each

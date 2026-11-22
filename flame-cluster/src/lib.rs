@@ -5,6 +5,7 @@ pub mod connection;
 mod join;
 mod listing;
 mod nodes;
+mod sessions;
 
 pub mod rpc {
     tonic::include_proto!("flame.v1");
@@ -54,8 +55,13 @@ fn resource_routes() -> Router<AppState> {
         .route("/flame.yaml", get(client_config::download))
         .route("/nodes", get(nodes::list))
         .route("/{resource}", get(listing::resources))
-        .route("/sessions/{id}/tasks", get(listing::tasks))
         .route("/sessions/{id}/actions/{action}", post(actions::action))
+}
+
+fn scoped_resource_routes() -> Router<AppState> {
+    resource_routes()
+        .route("/sessions/{id}", get(sessions::detail))
+        .route("/sessions/{id}/tasks", get(listing::tasks))
 }
 
 fn build_router(default: AppState, connections: Vec<(String, AppState)>) -> Router {
@@ -85,7 +91,7 @@ fn build_router(default: AppState, connections: Vec<(String, AppState)>) -> Rout
     for (id, state) in connections {
         api = api.nest(
             &format!("/connections/{id}"),
-            resource_routes().with_state(state),
+            scoped_resource_routes().with_state(state),
         );
     }
     Router::new()

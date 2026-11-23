@@ -196,8 +196,8 @@ some k3s configurations restrict them to the primary LAN address.
 Native FLM frontend/backend use server-authenticated TLS. Workers verify the
 advertised IP against validated public CA trust from FlameCluster status;
 Envoy verifies its upstream through BackendTLSPolicy. Server private keys stay
-in the Flame namespace. Server certificates retain their 24-hour lifetime and
-renew eight hours before expiry. Native worker transport does not provide
+in the Flame namespace. Session-manager server certificates last 30 days
+(`720h`) and renew eight hours before expiry. Native worker transport does not provide
 client-certificate authentication; SRE network restrictions remain necessary.
 
 The backend supports `cluster.flame.tls` for standalone HTTP/HTTPS/mTLS endpoints.

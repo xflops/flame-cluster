@@ -583,14 +583,14 @@ fn client_secret_contains_config_and_rotating_tls_material() {
 }
 
 #[test]
-fn exported_client_certificate_lasts_one_year_without_extending_flm_server_credentials() {
+fn server_and_client_certificates_have_separate_lifetimes() {
     let spec = spec();
     let objects =
         resources::flame_resources("flame", "flame-system", "uid", &spec, &spec.image, &[])
             .unwrap();
     for (name, duration, renew_before, usage) in [
         ("flame-admin-client", "8760h", "720h", "client auth"),
-        ("flame-control-plane-tls", "24h", "8h", "server auth"),
+        ("flame-control-plane-tls", "720h", "8h", "server auth"),
     ] {
         let certificate = objects
             .iter()

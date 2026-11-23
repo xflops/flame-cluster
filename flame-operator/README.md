@@ -90,8 +90,8 @@ CA/certificate/private-key files after cert-manager issues the client identity.
 The Secret name is reported in `status.clientSecret` and refreshed on renewal.
 The client certificate lasts one year (`8760h`), renewing 30 days (`720h`) before
 expiry, subject to the issuer honoring that lifetime. Exported `flame.yaml`
-copies must be refreshed separately. The native FLM server certificate retains
-its 24-hour lifetime and renews eight hours before expiry.
+copies must be refreshed separately. The native FLM server certificate lasts
+30 days (`720h`) and renews eight hours before expiry.
 Treat it as a credential and distribute it through SRE-managed access controls.
 Client URI SANs bind namespace, name and object UID; a certificate for a different
 FlameCluster cannot authenticate even when both use the same trusted issuer.

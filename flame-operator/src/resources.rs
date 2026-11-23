@@ -178,7 +178,7 @@ pub fn flame_resources(
         namespace,
         json!({
             "secretName":format!("{name}-control-plane-tls"),"dnsNames":[sm,format!("{sm}.{namespace}.svc"),format!("{sm}.{namespace}.svc.cluster.local")],
-            "duration":"24h","renewBefore":"8h","usages":["server auth"],"privateKey":{"algorithm":"ECDSA","size":256,"rotationPolicy":"Always"},
+            "duration":"720h","renewBefore":"8h","usages":["server auth"],"privateKey":{"algorithm":"ECDSA","size":256,"rotationPolicy":"Always"},
             "issuerRef":{"group":"cert-manager.io","kind":"ClusterIssuer","name":spec.gateway.issuer_name}
         }),
     );

@@ -89,7 +89,7 @@ The operator requests a one-year (`8760h`) client certificate and renewal thirty
 days (`720h`) before expiry. The SRE-managed issuer must permit that lifetime.
 Mounted bundles follow certificate rotation; copies exported to a host must be
 refreshed separately before their embedded certificate expires. The FLM server
-certificate keeps its 24-hour lifetime and renews eight hours before expiry.
+certificate lasts 30 days (`720h`) and renews eight hours before expiry.
 
 The operator renews cluster join tokens every fifteen minutes. The token grants
 access to enrollment through the Kubernetes HTTPS Service proxy and is exchanged
